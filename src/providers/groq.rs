@@ -1,4 +1,4 @@
-//! OpenAI API client implementation.
+//! Groq API client implementation.
 
 use serde::{Deserialize, Serialize};
 use crate::api::openai::{OpenAiCompatibleClient, OpenAiCompatibleModel};
@@ -6,21 +6,21 @@ use crate::options::{ModelOptions, TransportOptions};
 use crate::providers::Provider;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct OpenAiModel;
+pub struct GroqModel;
 
-impl OpenAiCompatibleModel for OpenAiModel {}
+impl OpenAiCompatibleModel for GroqModel {}
 
-pub type OpenAiClient = OpenAiCompatibleClient<OpenAiModel>;
+pub type GroqClient = OpenAiCompatibleClient<GroqModel>;
 
-pub struct OpenAi;
+pub struct Groq;
 
-impl Provider for OpenAi {
-    type Client = OpenAiClient;
+impl Provider for Groq {
+    type Client = GroqClient;
 
     fn create(api_key: String) -> Self::Client {
-        OpenAiClient::new(
+        GroqClient::new(
             api_key,
-            "https://api.openai.com".to_string(),
+            "https://api.groq.com/openai".to_string(),
             ModelOptions::default(),
             TransportOptions::default(),
         )
@@ -28,12 +28,12 @@ impl Provider for OpenAi {
 
     fn create_with_options(
         api_key: String,
-        model_options: ModelOptions<OpenAiModel>,
+        model_options: ModelOptions<GroqModel>,
         transport_options: TransportOptions,
     ) -> Self::Client {
-        OpenAiClient::new(
+        GroqClient::new(
             api_key,
-            "https://api.openai.com".to_string(),
+            "https://api.groq.com/openai".to_string(),
             model_options,
             transport_options,
         )

@@ -2,63 +2,104 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use serde_with::skip_serializing_none;
 use std::collections::HashMap;
 
 /// Role of the message sender.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Role {
+    System,
     User,
     Assistant,
 }
 
-/// A single message in a conversation.
+/// A part of a message content.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum Message {
-    Text {
-        role: Role,
-        content: String,
-    },
+#[serde(tag = "type", content = "data")]
+pub enum Part {
+    Text(String),
     Reasoning {
-        role: Role,
         content: String,
         summary: Option<String>,
         signature: Option<String>,
     },
     FunctionCall {
+        id: Option<String>,
         name: String,
         arguments: Value,
         signature: Option<String>,
     },
     FunctionResponse {
+        id: Option<String>,
         name: String,
         response: Value,
     },
+    Image {
+        data: String,
+        mime_type: String,
+    },
+}
+
+/// A single message in a conversation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "role", content = "content")]
+pub enum Message {
+    #[serde(rename = "system")]
+    System(Vec<Part>),
+    #[serde(rename = "user")]
+    User(Vec<Part>),
+    #[serde(rename = "assistant")]
+    Assistant(Vec<Part>),
 }
 
 impl Message {
     /// Get the role of the message.
-    pub fn role(&self) -> &Role {
+    pub fn role(&self) -> Role {
         match self {
-            Message::Text { role, .. } => role,
-            Message::Reasoning { role, .. } => role,
-            Message::FunctionCall { .. } => &Role::Assistant,
-            Message::FunctionResponse { .. } => &Role::User,
+            Message::System(_) => Role::System,
+            Message::User(_) => Role::User,
+            Message::Assistant(_) => Role::Assistant,
         }
     }
 
-    /// Get the content of the message.
-    pub fn content(&self) -> Option<String> {
+    /// Get the parts of the message.
+    pub fn parts(&self) -> &Vec<Part> {
         match self {
-            Message::Text { content, .. } => Some(content.clone()),
-            Message::Reasoning { content, .. } => Some(content.clone()),
-            Message::FunctionCall { .. } => None,
-            Message::FunctionResponse { .. } => None,
+            Message::System(parts) => parts,
+            Message::User(parts) => parts,
+            Message::Assistant(parts) => parts,
+        }
+    }
+
+    /// Get the mutable parts of the message.
+    pub fn parts_mut(&mut self) -> &mut Vec<Part> {
+        match self {
+            Message::System(parts) => parts,
+            Message::User(parts) => parts,
+            Message::Assistant(parts) => parts,
+        }
+    }
+
+    /// Get the text content of the message (concatenated text parts).
+    pub fn content(&self) -> Option<String> {
+        let parts = self.parts();
+        let text_parts: Vec<&str> = parts.iter().filter_map(|p| match p {
+            Part::Text(t) => Some(t.as_str()),
+            Part::Reasoning { content, .. } => Some(content.as_str()),
+            _ => None,
+        }).collect();
+        
+        if text_parts.is_empty() {
+            None
+        } else {
+            Some(text_parts.join("\n"))
         }
     }
 }
 
 /// Provider-agnostic request structure.
 /// Contains only model behavior parameters, not API configuration.
+#[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct GeneralRequest {
     /// Model identifier (e.g., "gpt-4o", "claude-3-opus")
@@ -80,7 +121,6 @@ pub struct GeneralRequest {
     pub top_p: Option<f32>,
 
     /// Arbitrary metadata for frontend/logging purposes
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<HashMap<String, serde_json::Value>>,
 }
 
@@ -96,25 +136,43 @@ pub enum FinishReason {
 }
 
 /// Token usage information.
+#[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Usage {
     /// Total prompt tokens used
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt_tokens: Option<u32>,
 
     /// Total completion tokens used
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub completion_tokens: Option<u32>,
 }
 
+impl std::ops::Add for Usage {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self {
+        Self {
+            prompt_tokens: self.prompt_tokens.map(|v| v + other.prompt_tokens.unwrap_or(0))
+                .or(other.prompt_tokens),
+            completion_tokens: self.completion_tokens.map(|v| v + other.completion_tokens.unwrap_or(0))
+                .or(other.completion_tokens),
+        }
+    }
+}
+
+impl std::ops::AddAssign for Usage {
+    fn add_assign(&mut self, other: Self) {
+        *self = self.clone() + other;
+    }
+}
+
 /// Provider-agnostic response structure.
+#[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Response {
     /// Generated messages (typically one assistant message, but can be multiple)
     pub data: Vec<Message>,
 
     /// Token usage information
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
 
     /// Finish reason for the response generation
@@ -126,10 +184,10 @@ pub struct Response {
 pub enum StreamChunk {
     /// Message data chunk
     Data(Message),
-    
+
     /// Token usage information
     Usage(Usage),
-    
+
     /// Finish reason
     Finish(FinishReason),
 }

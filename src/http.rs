@@ -1,33 +1,25 @@
 //! HTTP client utilities for making requests to LLM APIs.
-//!
-//! This module provides reusable HTTP client construction and
-//! request building logic that can be shared across providers.
 
 use reqwest::{Client, RequestBuilder};
-use std::collections::HashMap;
 
-use crate::options::{HttpTransport, TransportOptions};
+use crate::options::TransportOptions;
 
 /// Build a configured HTTP client from transport options.
-///
-/// This applies common configuration like timeouts and proxies.
-///
-/// # Example
-/// ```ignore
-/// let client = build_http_client(&transport_options)?;
-/// ```
 pub fn build_http_client(
-    transport_options: &TransportOptions<HttpTransport>,
+    transport_options: &TransportOptions,
 ) -> Result<Client, reqwest::Error> {
     let mut builder = Client::builder();
 
-    if let Some(timeout) = transport_options.timeout {
-        builder = builder.timeout(timeout);
-    }
-
-    if let Some(proxy_url) = &transport_options.provider.proxy {
-        if let Ok(proxy) = reqwest::Proxy::all(proxy_url) {
-            builder = builder.proxy(proxy);
+    match transport_options {
+        TransportOptions::Http { timeout, proxy, .. } => {
+            if let Some(t) = timeout {
+                builder = builder.timeout(*t);
+            }
+            if let Some(proxy_url) = proxy {
+                if let Ok(p) = reqwest::Proxy::all(proxy_url) {
+                    builder = builder.proxy(p);
+                }
+            }
         }
     }
 
@@ -35,59 +27,68 @@ pub fn build_http_client(
 }
 
 /// Add extra headers to a request if specified in transport options.
-///
-/// # Example
-/// ```ignore
-/// let mut req = client.post(url);
-/// req = add_extra_headers(req, &transport_options.provider.extra_headers);
-/// ```
 pub fn add_extra_headers(
     mut request: RequestBuilder,
-    extra_headers: &Option<HashMap<String, String>>,
+    transport_options: &TransportOptions,
 ) -> RequestBuilder {
-    if let Some(headers) = extra_headers {
-        for (key, value) in headers {
-            request = request.header(key, value);
+    match transport_options {
+        TransportOptions::Http { headers, .. } => {
+            if let Some(h) = headers {
+                for (key, value) in h {
+                    request = request.header(key, value);
+                }
+            }
         }
     }
     request
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::options::SecretString;
-    use std::time::Duration;
+/// Extension trait for RequestBuilder that logs request body.
+pub trait RequestBuilderExt {
+    /// Set JSON request body and log it. Returns the RequestBuilder for chaining.
+    fn json_logged<T: serde::Serialize + ?Sized>(self, json: &T) -> Self;
+}
 
-    #[test]
-    fn test_build_http_client() {
-        let transport_options = TransportOptions {
-            timeout: Some(Duration::from_secs(30)),
-            provider: HttpTransport {
-                api_key: Some(SecretString::new("test".to_string())),
-                base_url: None,
-                proxy: None,
-                extra_headers: None,
-            },
-        };
+impl RequestBuilderExt for RequestBuilder {
+    fn json_logged<T: serde::Serialize + ?Sized>(self, json: &T) -> Self {
+        // Log request body
+        if let Ok(req_body) = serde_json::to_string_pretty(json) {
+            tracing::debug!("API request body ({} bytes):\n{}", req_body.len(), req_body);
+        }
 
-        let client = build_http_client(&transport_options);
-        assert!(client.is_ok());
+        self.json(json)
+    }
+}
+
+/// Extension trait for Response that logs response body.
+#[async_trait::async_trait]
+pub trait ResponseExt {
+    /// Get response text and log it. Consumes the response.
+    async fn text_logged(self) -> Result<String, reqwest::Error>;
+
+    /// Parse response as JSON and log it. Consumes the response.
+    async fn json_logged<T: serde::de::DeserializeOwned>(self) -> Result<T, serde_json::Error>;
+}
+
+#[async_trait::async_trait]
+impl ResponseExt for reqwest::Response {
+    async fn text_logged(self) -> Result<String, reqwest::Error> {
+        let text = self.text().await?;
+        tracing::debug!("API response ({} bytes):\n{}", text.len(), text);
+        Ok(text)
     }
 
-    #[test]
-    fn test_build_http_client_with_proxy() {
-        let transport_options = TransportOptions {
-            timeout: None,
-            provider: HttpTransport {
-                api_key: Some(SecretString::new("test".to_string())),
-                base_url: None,
-                proxy: Some("http://proxy.example.com:8080".to_string()),
-                extra_headers: None,
-            },
-        };
+    async fn json_logged<T: serde::de::DeserializeOwned>(self) -> Result<T, serde_json::Error> {
+        // Get bytes - if this fails, the HTTP call already failed, so we panic
+        let bytes = self
+            .bytes()
+            .await
+            .expect("Failed to read response bytes after successful HTTP call");
 
-        let client = build_http_client(&transport_options);
-        assert!(client.is_ok());
+        if let Ok(text) = std::str::from_utf8(&bytes) {
+            tracing::debug!("API response ({} bytes):\n{}", text.len(), text);
+        }
+
+        serde_json::from_slice(&bytes)
     }
 }

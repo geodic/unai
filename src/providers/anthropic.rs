@@ -1,18 +1,18 @@
-//! Gemini provider implementation.
+//! Anthropic API client implementation.
 
+pub use crate::api::anthropic::{AnthropicClient, AnthropicModel};
 use crate::options::{ModelOptions, TransportOptions};
 use crate::providers::Provider;
 
-pub use crate::api::gemini::{GeminiClient, GeminiModel};
+pub struct Anthropic;
 
-pub struct Gemini;
-
-impl Provider for Gemini {
-    type Client = GeminiClient;
+impl Provider for Anthropic {
+    type Client = AnthropicClient;
 
     fn create(api_key: String) -> Self::Client {
-        Self::create_with_options(
+        AnthropicClient::new(
             api_key,
+            "https://api.anthropic.com/v1".to_string(),
             ModelOptions::default(),
             TransportOptions::default(),
         )
@@ -20,12 +20,12 @@ impl Provider for Gemini {
 
     fn create_with_options(
         api_key: String,
-        model_options: ModelOptions<GeminiModel>,
+        model_options: ModelOptions<AnthropicModel>,
         transport_options: TransportOptions,
     ) -> Self::Client {
-        GeminiClient::new(
+        AnthropicClient::new(
             api_key,
-            "https://generativelanguage.googleapis.com".to_string(),
+            "https://api.anthropic.com/v1".to_string(),
             model_options,
             transport_options,
         )

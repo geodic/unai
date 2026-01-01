@@ -1,4 +1,4 @@
-//! OpenAI API client implementation.
+//! Together AI API client implementation.
 
 use serde::{Deserialize, Serialize};
 use crate::api::openai::{OpenAiCompatibleClient, OpenAiCompatibleModel};
@@ -6,21 +6,21 @@ use crate::options::{ModelOptions, TransportOptions};
 use crate::providers::Provider;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct OpenAiModel;
+pub struct TogetherModel;
 
-impl OpenAiCompatibleModel for OpenAiModel {}
+impl OpenAiCompatibleModel for TogetherModel {}
 
-pub type OpenAiClient = OpenAiCompatibleClient<OpenAiModel>;
+pub type TogetherClient = OpenAiCompatibleClient<TogetherModel>;
 
-pub struct OpenAi;
+pub struct Together;
 
-impl Provider for OpenAi {
-    type Client = OpenAiClient;
+impl Provider for Together {
+    type Client = TogetherClient;
 
     fn create(api_key: String) -> Self::Client {
-        OpenAiClient::new(
+        TogetherClient::new(
             api_key,
-            "https://api.openai.com".to_string(),
+            "https://api.together.xyz".to_string(),
             ModelOptions::default(),
             TransportOptions::default(),
         )
@@ -28,12 +28,12 @@ impl Provider for OpenAi {
 
     fn create_with_options(
         api_key: String,
-        model_options: ModelOptions<OpenAiModel>,
+        model_options: ModelOptions<TogetherModel>,
         transport_options: TransportOptions,
     ) -> Self::Client {
-        OpenAiClient::new(
+        TogetherClient::new(
             api_key,
-            "https://api.openai.com".to_string(),
+            "https://api.together.xyz".to_string(),
             model_options,
             transport_options,
         )

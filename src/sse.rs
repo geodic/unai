@@ -67,7 +67,10 @@ impl SSEResponseExt for reqwest::Response {
                             }
                             Some(Err(e)) => {
                                 // HTTP error
-                                return Some((Err(ClientError::from(e)), (byte_stream, buffer, stream_ended)));
+                                return Some((
+                                    Err(ClientError::from(e)),
+                                    (byte_stream, buffer, stream_ended),
+                                ));
                             }
                             None => {
                                 // Byte stream ended - process any remaining complete lines in the buffer
@@ -94,7 +97,10 @@ impl SSEResponseExt for reqwest::Response {
                             }
 
                             // Return raw data line immediately
-                            return Some((Ok(data.to_string()), (byte_stream, buffer, stream_ended)));
+                            return Some((
+                                Ok(data.to_string()),
+                                (byte_stream, buffer, stream_ended),
+                            ));
                         }
                     }
 
@@ -106,12 +112,15 @@ impl SSEResponseExt for reqwest::Response {
                             if !line.is_empty() {
                                 if let Some(data) = parse_sse_line(&line) {
                                     if !is_done_marker(data) {
-                                        return Some((Ok(data.to_string()), (byte_stream, buffer, stream_ended)));
+                                        return Some((
+                                            Ok(data.to_string()),
+                                            (byte_stream, buffer, stream_ended),
+                                        ));
                                     }
                                 }
                             }
                         }
-                        
+
                         return None;
                     }
 
