@@ -25,7 +25,7 @@ impl Provider for Gemini {
     ) -> Self::Client {
         GeminiClient::new(
             api_key,
-            "https://generativelanguage.googleapis.com".to_string(),
+            "https://generativelanguage.googleapis.com/v1beta".to_string(),
             model_options,
             transport_options,
         )

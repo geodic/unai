@@ -23,6 +23,8 @@ tracing = "0.1"
 serde_with = "3.16.1"
 rmcp = { version = "0.10.0", features = ["client", "server", "macros"] }
 async-stream = "0.3.6"
+uuid = { version = "1.19.0", features = ["v4"] }
+base64 = "0.22"
 
 [dev-dependencies]
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

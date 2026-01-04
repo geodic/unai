@@ -4,11 +4,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_with::skip_serializing_none;
 use std::collections::HashMap;
+use rmcp::model::CallToolResult;
 
 /// Role of the message sender.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Role {
-    System,
     User,
     Assistant,
 }
@@ -17,26 +17,49 @@ pub enum Role {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum Part {
-    Text(String),
+    Text {
+        content: String,
+        #[serde(default)]
+        finished: bool,
+    },
     Reasoning {
         content: String,
         summary: Option<String>,
         signature: Option<String>,
+        #[serde(default)]
+        finished: bool,
     },
     FunctionCall {
         id: Option<String>,
         name: String,
         arguments: Value,
         signature: Option<String>,
+        #[serde(default)]
+        finished: bool,
     },
     FunctionResponse {
         id: Option<String>,
         name: String,
         response: Value,
+        parts: Vec<Part>,
+        #[serde(default)]
+        finished: bool,
     },
     Image {
         data: String,
         mime_type: String,
+        #[serde(default)]
+        uri: Option<String>,
+        #[serde(default)]
+        finished: bool,
+    },
+    File {
+        data: String,
+        mime_type: String,
+        #[serde(default)]
+        uri: Option<String>,
+        #[serde(default)]
+        finished: bool,
     },
 }
 
@@ -44,8 +67,6 @@ pub enum Part {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "role", content = "content")]
 pub enum Message {
-    #[serde(rename = "system")]
-    System(Vec<Part>),
     #[serde(rename = "user")]
     User(Vec<Part>),
     #[serde(rename = "assistant")]
@@ -56,7 +77,6 @@ impl Message {
     /// Get the role of the message.
     pub fn role(&self) -> Role {
         match self {
-            Message::System(_) => Role::System,
             Message::User(_) => Role::User,
             Message::Assistant(_) => Role::Assistant,
         }
@@ -65,7 +85,6 @@ impl Message {
     /// Get the parts of the message.
     pub fn parts(&self) -> &Vec<Part> {
         match self {
-            Message::System(parts) => parts,
             Message::User(parts) => parts,
             Message::Assistant(parts) => parts,
         }
@@ -74,7 +93,6 @@ impl Message {
     /// Get the mutable parts of the message.
     pub fn parts_mut(&mut self) -> &mut Vec<Part> {
         match self {
-            Message::System(parts) => parts,
             Message::User(parts) => parts,
             Message::Assistant(parts) => parts,
         }
@@ -83,12 +101,15 @@ impl Message {
     /// Get the text content of the message (concatenated text parts).
     pub fn content(&self) -> Option<String> {
         let parts = self.parts();
-        let text_parts: Vec<&str> = parts.iter().filter_map(|p| match p {
-            Part::Text(t) => Some(t.as_str()),
-            Part::Reasoning { content, .. } => Some(content.as_str()),
-            _ => None,
-        }).collect();
-        
+        let text_parts: Vec<&str> = parts
+            .iter()
+            .filter_map(|p| match p {
+                Part::Text { content: text, .. } => Some(text.as_str()),
+                Part::Reasoning { content, .. } => Some(content.as_str()),
+                _ => None,
+            })
+            .collect();
+
         if text_parts.is_empty() {
             None
         } else {
@@ -125,7 +146,7 @@ pub struct GeneralRequest {
 }
 
 /// Reason for finishing the response generation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum FinishReason {
     Stop,
     PromptTokens,
@@ -133,11 +154,14 @@ pub enum FinishReason {
     ToolCalls,
     ContentFilter,
     Error,
+    /// Default state when response is incomplete or streaming.
+    /// If this is returned to the user, something went wrong.
+    Unfinished,
 }
 
 /// Token usage information.
 #[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Usage {
     /// Total prompt tokens used
     pub prompt_tokens: Option<u32>,
@@ -151,9 +175,13 @@ impl std::ops::Add for Usage {
 
     fn add(self, other: Self) -> Self {
         Self {
-            prompt_tokens: self.prompt_tokens.map(|v| v + other.prompt_tokens.unwrap_or(0))
+            prompt_tokens: self
+                .prompt_tokens
+                .map(|v| v + other.prompt_tokens.unwrap_or(0))
                 .or(other.prompt_tokens),
-            completion_tokens: self.completion_tokens.map(|v| v + other.completion_tokens.unwrap_or(0))
+            completion_tokens: self
+                .completion_tokens
+                .map(|v| v + other.completion_tokens.unwrap_or(0))
                 .or(other.completion_tokens),
         }
     }
@@ -173,21 +201,10 @@ pub struct Response {
     pub data: Vec<Message>,
 
     /// Token usage information
-    pub usage: Option<Usage>,
+    pub usage: Usage,
 
     /// Finish reason for the response generation
     pub finish: FinishReason,
 }
 
-/// Streaming response chunk - can be data, usage, or finish information.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum StreamChunk {
-    /// Message data chunk
-    Data(Message),
 
-    /// Token usage information
-    Usage(Usage),
-
-    /// Finish reason
-    Finish(FinishReason),
-}

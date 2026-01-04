@@ -1,15 +1,15 @@
+use rmcp::service::ServiceExt;
 use rmcp::{
-    ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{ServerCapabilities, ServerInfo},
-    schemars, tool, tool_handler, tool_router,
+    schemars, tool, tool_handler, tool_router, ServerHandler,
 };
-use rmcp::service::ServiceExt;
-use unai::model::{Message, Role, Part};
+use serde::Deserialize;
+use unai::mcp::MCPServerImpl;
+use unai::model::{Message, Part, Role};
 use unai::options::{ModelOptions, TransportOptions};
 use unai::providers::{Gemini, Provider};
-use unai::{Agent};
-use serde::Deserialize;
+use unai::Agent;
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct WeatherArgs {
@@ -63,40 +63,52 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let model_options = ModelOptions {
         model: Some("gemini-2.5-flash".to_string()),
+        system: Some("You are an expert English linguist, writer, and weather analyst. \
+            You have access to tools to get real-time data. \
+            Your goal is to provide high-quality, long-form literary analyses. \
+            Always use your tools to get facts, then apply your persona to the output.".to_string()),
         ..Default::default()
     };
 
-    let client = Gemini::create_with_options(
-        api_key,
-        model_options,
-        TransportOptions::default(),
-    );
+    let client = Gemini::create_with_options(api_key, model_options, TransportOptions::default());
     let agent = Agent::new(client);
 
-    let messages = vec![Message::User(vec![Part::Text("Can you give me an analysis on the weather in Tokyo? Please get the weather from the tool and analyse it.".to_string())])];
+    let messages = vec![
+        Message::User(vec![Part::Text {
+            content: "Can you give me a 5 paragraph essay-like analysis on the weather in Tokyo?".to_string(),
+            finished: true,
+        }])
+    ];
 
     let tools_handler = WeatherTools::new();
-    
+
     let (client_transport, server_transport) = tokio::io::duplex(1024);
 
     tokio::spawn(async move {
         tracing::info!("Starting weather tool server...");
-        let service = tools_handler.serve(server_transport).await.expect("Failed to start server");
+        let service = tools_handler
+            .serve(server_transport)
+            .await
+            .expect("Failed to start server");
         service.waiting().await.expect("Server error");
     });
 
     let tools = ().serve(client_transport).await?;
 
-    let agent = agent.with_mcp_server(tools);
+    let agent = agent.with_server(MCPServerImpl::new(tools));
 
-    let response = agent.chat(messages, vec![]).await?;
-    
+    let response = agent.chat(messages).await?;
+
     for message in &response.data {
         for part in message.parts() {
             match part {
-                Part::Text(content) => println!("Response: {}", content),
-                Part::FunctionCall { name, arguments, .. } => println!("Tool Call: {} {}", name, arguments),
-                Part::FunctionResponse { name, response, .. } => println!("Tool Result: {} {}", name, response),
+                Part::Text { content: content, .. } => println!("Response: {}", content),
+                Part::FunctionCall {
+                    name, arguments, ..
+                } => println!("Tool Call: {} {}", name, arguments),
+                Part::FunctionResponse { name, response, .. } => {
+                    println!("Tool Result: {} {:?}", name, response)
+                }
                 _ => {}
             }
         }

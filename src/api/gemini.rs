@@ -1,35 +1,48 @@
 //! Google Gemini API client implementation.
-//!
-//! This module implements the `Client` trait for Google's Gemini API using
-//! the generic options architecture.
-//! See: <https://ai.google.dev/api/rest>
 
 use async_trait::async_trait;
-use futures::Stream;
-use nonempty::NonEmpty;
-use reqwest::header::CONTENT_TYPE;
+use base64::prelude::*;
+use futures::{Stream, StreamExt, stream};
+use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use serde_with::skip_serializing_none;
+use std::pin::Pin;
 
 use crate::client::{Client, ClientError, StreamingClient};
 use crate::http::{add_extra_headers, build_http_client, RequestBuilderExt, ResponseExt};
-use crate::model::{FinishReason, Message, Response, Role, Usage, Part};
+use crate::model::{FinishReason, Message, Part, Response, Usage};
 use crate::options::{ModelOptions, TransportOptions};
 use crate::sse::SSEResponseExt;
+use rmcp::model::CallToolResult;
 
-/// Gemini-specific model options.
-/// Currently empty, but can be extended with Gemini-specific parameters
-/// like `top_k`, `safety_settings`, etc.
+/// Gemini model options.
+#[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct GeminiModel {
-    // Future Gemini-specific fields:
-    // pub top_k: Option<u32>,
-    // pub safety_settings: Option<Vec<SafetySetting>>,
-    // pub stop_sequences: Option<Vec<String>>,
+    pub top_k: Option<u32>,
+    pub safety_settings: Option<Vec<GeminiSafetySetting>>,
+    pub stop_sequences: Option<Vec<String>>,
+    pub response_mime_type: Option<String>,
+    pub thinking_budget: Option<u32>,
+    pub thinking_level: Option<GeminiThinkingLevel>,
+    pub include_thoughts: Option<bool>,
 }
 
-/// Gemini client using HTTP transport.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum GeminiThinkingLevel {
+    Low,
+    High,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GeminiSafetySetting {
+    pub category: String,
+    pub threshold: String,
+}
+
+/// Gemini client.
 #[derive(Debug, Clone)]
 pub struct GeminiClient {
     api_key: String,
@@ -39,7 +52,6 @@ pub struct GeminiClient {
 }
 
 impl GeminiClient {
-    /// Create a new Gemini client.
     pub fn new(
         api_key: String,
         base_url: String,
@@ -54,59 +66,6 @@ impl GeminiClient {
         }
     }
 
-    /// Process streaming response from Gemini.
-    fn process_stream(
-        response: reqwest::Response,
-    ) -> impl Stream<Item = Result<crate::model::StreamChunk, ClientError>> + Send {
-        use crate::model::{StreamChunk, Usage};
-        use futures::StreamExt;
-
-        // Use the SSE response extension trait
-        let sse_stream = response.sse().map(|result| {
-            result.and_then(|line| {
-                serde_json::from_str::<GeminiResponse>(&line).map_err(ClientError::Parse)
-            })
-        });
-
-        // Map Gemini-specific chunks to StreamChunk enum variants
-        sse_stream.flat_map(|result| {
-            use futures::stream;
-
-            match result {
-                Ok(gemini_resp) => {
-                    let mut chunks = Vec::new();
-
-                    // Extract message data chunks
-                    for candidate in gemini_resp.candidates.iter() {
-                        for part in &candidate.content.parts {
-                            chunks.push(Ok(StreamChunk::Data(part.clone().into())));
-                        }
-                    }
-
-                    // Add usage chunk if available
-                    if let Some(usage_metadata) = gemini_resp.usage_metadata {
-                        chunks.push(Ok(StreamChunk::Usage(Usage {
-                            prompt_tokens: Some(usage_metadata.prompt_token_count),
-                            completion_tokens: Some(
-                                usage_metadata.candidates_token_count.unwrap_or_default()
-                                    + usage_metadata.thoughts_token_count.unwrap_or_default(),
-                            ),
-                        })));
-                    }
-
-                    // Only emit finish chunk if finish_reason is present (arrives at the end in streaming)
-                    if let Some(finish_reason) = gemini_resp.candidates.last().finish_reason {
-                        chunks.push(Ok(StreamChunk::Finish(finish_reason.into())));
-                    }
-
-                    stream::iter(chunks)
-                }
-                Err(e) => stream::iter(vec![Err(e)]),
-            }
-        })
-    }
-
-    /// Handle Gemini error responses.
     fn handle_error_response(status: reqwest::StatusCode, body: &str) -> ClientError {
         if let Ok(error_resp) = serde_json::from_str::<GeminiErrorResponse>(body) {
             ClientError::ProviderError(format!(
@@ -117,144 +76,95 @@ impl GeminiClient {
             ClientError::ProviderError(format!("HTTP {}: {}", status, body))
         }
     }
-}
 
-impl GeminiRequest {
-    fn new(messages: Vec<Message>, model_options: &ModelOptions<GeminiModel>, tool_defs: Vec<rmcp::model::Tool>) -> Self {
-        let mut contents = Vec::new();
-        // Handle system instructions if needed, though Gemini usually takes them in generation config or separate field?
-        // Actually Gemini API has `system_instruction` field at top level.
-        // But `GeminiRequest` struct definition (which I haven't seen fully) needs to support it.
-        // Let's check `GeminiRequest` struct definition.
-        // I'll assume it doesn't have it for now based on previous code, or I'll check.
+    pub async fn upload_file(&self, mime_type: &str, data: &[u8]) -> Result<String, ClientError> {
+        tracing::debug!("Starting file upload. Mime: {}, Size: {} bytes", mime_type, data.len());
+        let http_client = build_http_client(&self.transport_options)?;
+        let upload_base_url = "https://generativelanguage.googleapis.com/upload/v1beta/files";
+        let start_url = format!("{}?key={}", upload_base_url, self.api_key);
         
-        for msg in messages {
-            match msg {
-                Message::System(_) => {
-                    // Skip system messages in contents for now, or map to User?
-                    // If I can't add to system_instruction (if struct doesn't have it), I might have to skip or map.
-                    // Previous code didn't handle System role explicitly (it wasn't in Role enum).
-                }
-                _ => {
-                    contents.push(msg.into());
-                }
-            }
+        let mut headers = HeaderMap::new();
+        headers.insert("X-Goog-Upload-Protocol", HeaderValue::from_static("resumable"));
+        headers.insert("X-Goog-Upload-Command", HeaderValue::from_static("start"));
+        headers.insert("X-Goog-Upload-Header-Content-Length", HeaderValue::from_str(&data.len().to_string()).unwrap());
+        headers.insert("X-Goog-Upload-Header-Content-Type", HeaderValue::from_str(mime_type).map_err(|_| ClientError::Config("Invalid mime type".to_string()))?);
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+
+        let body = json!({});
+
+        let resp = http_client.post(&start_url)
+            .headers(headers)
+            .json(&body)
+            .send()
+            .await?;
+        let status = resp.status();
+
+        if !status.is_success() {
+             let body = resp.text().await.unwrap_or_default();
+             return Err(Self::handle_error_response(status, &body));
         }
 
-        GeminiRequest {
-            contents,
-            generation_config: Some(GeminiGenerationConfig {
-                temperature: model_options.temperature,
-                top_p: model_options.top_p,
-                max_output_tokens: model_options.max_tokens,
-                thinking_config: Some(GeminiThinkingConfig {
-                    include_thoughts: model_options.reasoning,
-                    thinking_budget: None,
-                }),
-            }),
-            tools: Some(vec![GeminiTool {
-                function_declarations: tool_defs
-                    .iter()
-                    .map(|def| GeminiFunctionDeclaration {
-                        name: def.name.to_string(),
-                        description: def.description.as_ref().map(|d| d.to_string()).unwrap_or_default(),
-                        parameters_json_schema: serde_json::Value::Object((*def.input_schema).clone()),
-                    })
-                    .collect(),
-            }]),
+        let upload_url = resp.headers().get("x-goog-upload-url")
+            .ok_or_else(|| ClientError::ProviderError("Missing x-goog-upload-url header".to_string()))?
+            .to_str()
+            .map_err(|_| ClientError::ProviderError("Invalid x-goog-upload-url header".to_string()))?
+            .to_string();
+
+        tracing::debug!("File upload started. Upload URL: {}", upload_url);
+
+        let mut headers = HeaderMap::new();
+        headers.insert("Content-Length", HeaderValue::from_str(&data.len().to_string()).unwrap());
+        headers.insert("X-Goog-Upload-Offset", HeaderValue::from_static("0"));
+        headers.insert("X-Goog-Upload-Command", HeaderValue::from_static("upload, finalize"));
+
+        let resp = http_client.post(&upload_url)
+            .headers(headers)
+            .body(data.to_vec())
+            .send()
+            .await?;
+        let status = resp.status();
+
+        if !status.is_success() {
+             let body = resp.text().await.unwrap_or_default();
+             return Err(Self::handle_error_response(status, &body));
         }
+
+        let resp_json: Value = resp.json().await?;
+        let file_uri = resp_json["file"]["uri"].as_str()
+            .ok_or_else(|| ClientError::ProviderError("Missing file uri in response".to_string()))?
+            .to_string();
+
+        tracing::debug!("File uploaded successfully. URI: {}", file_uri);
+
+        Ok(file_uri)
     }
-}
 
-impl From<Role> for GeminiRole {
-    fn from(role: Role) -> Self {
-        match role {
-            Role::User => GeminiRole::User,
-            Role::Assistant => GeminiRole::Model,
-            Role::System => GeminiRole::User,
-        }
-    }
-}
+    async fn build_request(
+        &self,
+        messages: Vec<Message>,
+        tools: Vec<rmcp::model::Tool>,
+        stream: bool,
+    ) -> Result<reqwest::RequestBuilder, ClientError> {
+        let model = self
+            .model_options
+            .model
+            .clone()
+            .ok_or_else(|| ClientError::Config("Model must be specified".to_string()))?;
 
-impl From<Message> for GeminiContent {
-    fn from(msg: Message) -> Self {
-        let role = match msg {
-            Message::User(_) => GeminiRole::User,
-            Message::Assistant(_) => GeminiRole::Model,
-            Message::System(_) => GeminiRole::User,
-        };
+        let method = if stream { "streamGenerateContent?alt=sse&" } else { "generateContent?" };
+        let url = format!("{}/models/{}:{}key={}", self.base_url, model, method, self.api_key);
 
-        let mut parts = Vec::new();
-        for part in msg.parts() {
-            match part {
-                Part::Text(text) => parts.push(GeminiPart::Text { thought: None, text: text.clone() }),
-                Part::Reasoning { content, .. } => parts.push(GeminiPart::Text { thought: Some(true), text: content.clone() }),
-                Part::FunctionCall { name, arguments, signature, .. } => parts.push(GeminiPart::FunctionCall {
-                    thought_signature: signature.clone(),
-                    function_call: FunctionCall { name: name.clone(), args: arguments.clone() },
-                }),
-                Part::FunctionResponse { name, response, .. } => parts.push(GeminiPart::FunctionResponse {
-                    function_response: FunctionResponse { name: name.clone(), response: response.clone() },
-                }),
-                Part::Image { .. } => { /* Placeholder */ }
-            }
-        }
+        let request_body = GeminiRequest::new(self, messages, &self.model_options, tools).await?;
 
-        GeminiContent {
-            role,
-            parts,
-        }
-    }
-}
+        let http_client = build_http_client(&self.transport_options)?;
 
-impl From<GeminiPart> for Message {
-    fn from(part: GeminiPart) -> Self {
-        match part {
-            GeminiPart::Text { thought, text } => {
-                if thought.unwrap_or_default() {
-                    Message::Assistant(vec![Part::Reasoning {
-                        content: text,
-                        summary: None,
-                        signature: None,
-                    }])
-                } else {
-                    Message::Assistant(vec![Part::Text(text)])
-                }
-            }
-            GeminiPart::FunctionCall {
-                thought_signature,
-                function_call,
-            } => Message::Assistant(vec![Part::FunctionCall {
-                id: None,
-                name: function_call.name,
-                arguments: function_call.args,
-                signature: thought_signature,
-            }]),
-            _ => panic!(
-                "Attempted conversion of unsupported GeminiPart variant (this is a interal bug)"
-            ),
-        }
-    }
-}
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
-impl From<GeminiResponse> for Response {
-    fn from(gemini_resp: GeminiResponse) -> Self {
-        let finish_reason = gemini_resp
-            .candidates
-            .last()
-            .finish_reason
-            .unwrap_or(GeminiFinishReason::Stop)
-            .into();
-        let parts = gemini_resp
-            .candidates
-            .into_iter()
-            .flat_map(|candidate| candidate.content.parts.into_iter());
-
-        Response {
-            data: parts.map(|part| part.into()).collect(),
-            usage: gemini_resp.usage_metadata.map(|u| u.into()),
-            finish: finish_reason,
-        }
+        let mut req = http_client.post(&url).headers(headers);
+        req = add_extra_headers(req, &self.transport_options);
+        
+        Ok(req.json_logged(&request_body))
     }
 }
 
@@ -267,31 +177,9 @@ impl Client for GeminiClient {
         messages: Vec<Message>,
         tools: Vec<rmcp::model::Tool>,
     ) -> Result<Response, ClientError> {
-        // Determine model: use model_options or default
-        let model = self.model_options
-            .model
-            .clone()
-            .ok_or_else(|| ClientError::Config("Model must be specified".to_string()))?;
-
-        let url = format!(
-            "{}/v1beta/models/{}:generateContent?key={}",
-            self.base_url, model, self.api_key
-        );
-
-        // Build request body inline
-        let request_body = GeminiRequest::new(messages, &self.model_options, tools);
-
-        // Build HTTP client with transport options
-        let http_client = build_http_client(&self.transport_options)?;
-
-        // Build request with extra headers if specified
-        let mut req = http_client
-            .post(&url)
-            .header(CONTENT_TYPE, "application/json");
-
-        req = add_extra_headers(req, &self.transport_options);
-
-        let response = req.json_logged(&request_body).send().await?;
+        let req = self.build_request(messages, tools, false).await?;
+        
+        let response = req.send().await?;
         let status = response.status();
 
         if !status.is_success() {
@@ -319,35 +207,11 @@ impl StreamingClient for GeminiClient {
         messages: Vec<Message>,
         tools: Vec<rmcp::model::Tool>,
     ) -> Result<
-        std::pin::Pin<Box<dyn Stream<Item = Result<crate::model::StreamChunk, ClientError>> + Send>>,
+        Pin<Box<dyn Stream<Item = Result<Response, ClientError>> + Send>>,
         ClientError,
     > {
-        // Determine model: use model_options or default
-        let model = self.model_options
-            .model
-            .clone()
-            .ok_or_else(|| ClientError::Config("Model must be specified".to_string()))?;
-
-        // Use alt=sse parameter for true streaming with Server-Sent Events
-        let url = format!(
-            "{}/v1beta/models/{}:streamGenerateContent?alt=sse&key={}",
-            self.base_url, model, self.api_key
-        );
-
-        let request_body = GeminiRequest::new(messages, &self.model_options, tools);
-
-        // Build HTTP client with transport options
-        let http_client = build_http_client(&self.transport_options)?;
-
-        // Build request with extra headers if specified
-        let mut req = http_client
-            .post(&url)
-            .header(CONTENT_TYPE, "application/json");
-
-        req = add_extra_headers(req, &self.transport_options);
-
-        // For streaming, we log the request but not the response (it's a stream)
-        let response = req.json_logged(&request_body).send().await?;
+        let req = self.build_request(messages, tools, true).await?;
+        let response = req.send().await?;
         let status = response.status();
 
         if !status.is_success() {
@@ -355,179 +219,522 @@ impl StreamingClient for GeminiClient {
             return Err(Self::handle_error_response(status, &body));
         }
 
-        Ok(Box::pin(Self::process_stream(response)))
+        Ok(Box::pin(GeminiStream::new(response)))
     }
 }
 
-// --- Gemini API Request/Response Types ---
+// --- Streaming Implementation ---
+
+struct GeminiStream;
+
+impl GeminiStream {
+    fn new(response: reqwest::Response) -> impl Stream<Item = Result<Response, ClientError>> + Send {
+        let sse_stream = response.sse();
+        
+        Box::pin(async_stream::try_stream! {
+            let mut stream = Box::pin(sse_stream);
+            let mut current_response = Response {
+                data: vec![Message::Assistant(vec![])],
+                usage: Usage::default(),
+                finish: FinishReason::Unfinished,
+            };
+            
+            #[derive(PartialEq)]
+            enum PartType { Text, Reasoning, FunctionCall }
+            let mut last_part_type: Option<PartType> = None;
+
+            while let Some(event_result) = stream.next().await {
+                let event_str = event_result?;
+                
+                let chunk_result: GeminiResponse = serde_json::from_str(&event_str)
+                    .map_err(|e| ClientError::ProviderError(format!("JSON parse error: {}", e)))?;
+                
+                if let Some(usage_meta) = chunk_result.usage_metadata {
+                    current_response.usage.prompt_tokens = Some(usage_meta.prompt_token_count);
+                    current_response.usage.completion_tokens = Some(usage_meta.candidates_token_count.unwrap_or(0) + usage_meta.thoughts_token_count.unwrap_or(0));
+                }
+
+                if let Some(candidates) = chunk_result.candidates {
+                    if let Some(candidate) = candidates.first() {
+                        if let Some(content) = &candidate.content {
+                            let parts = current_response.data[0].parts_mut();
+                            
+                            for part in &content.parts {
+                                match part {
+                                    GeminiPart::Text { text, thought } => {
+                                        let is_thought = thought.unwrap_or(false);
+                                        let current_type = if is_thought { PartType::Reasoning } else { PartType::Text };
+                                        
+                                        if let Some(last_type) = &last_part_type {
+                                            if *last_type != current_type {
+                                                if let Some(last_part) = parts.last_mut() {
+                                                    match last_part {
+                                                        Part::Text { finished, .. } => *finished = true,
+                                                        Part::Reasoning { finished, .. } => *finished = true,
+                                                        Part::FunctionCall { finished, .. } => *finished = true,
+                                                        _ => {},
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        last_part_type = Some(current_type);
+
+                                        let should_append = if let Some(last_part) = parts.last_mut() {
+                                            match (last_part, is_thought) {
+                                                (Part::Text { finished: false, .. }, false) => true,
+                                                (Part::Reasoning { finished: false, .. }, true) => true,
+                                                _ => false,
+                                            }
+                                        } else {
+                                            false
+                                        };
+
+                                        if should_append {
+                                            if let Some(last_part) = parts.last_mut() {
+                                                match last_part {
+                                                    Part::Text { content: t, .. } => t.push_str(text),
+                                                    Part::Reasoning { content: c, .. } => c.push_str(text),
+                                                    _ => {},
+                                                }
+                                            }
+                                        } else {
+                                            if is_thought {
+                                                parts.push(Part::Reasoning {
+                                                    content: text.clone(),
+                                                    summary: None,
+                                                    signature: None,
+                                                    finished: false,
+                                                });
+                                            } else {
+                                                parts.push(Part::Text {
+                                                    content: text.clone(),
+                                                    finished: false,
+                                                });
+                                            }
+                                        }
+                                    },
+                                    GeminiPart::FunctionCall { function_call, thought_signature } => {
+                                        if let Some(last_type) = &last_part_type {
+                                            if *last_type != PartType::FunctionCall {
+                                                 if let Some(last_part) = parts.last_mut() {
+                                                    match last_part {
+                                                        Part::Text { finished, .. } => *finished = true,
+                                                        Part::Reasoning { finished, .. } => *finished = true,
+                                                        _ => {},
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        last_part_type = Some(PartType::FunctionCall);
+                                        
+                                        parts.push(Part::FunctionCall {
+                                            id: None,
+                                            name: function_call.name.clone(),
+                                            arguments: function_call.args.clone(),
+                                            signature: thought_signature.clone(),
+                                            finished: false,
+                                        });
+                                    },
+                                    _ => {}
+                                }
+                            }
+                        }
+
+                        if let Some(finish_reason) = &candidate.finish_reason {
+                            for part in current_response.data[0].parts_mut() {
+                                match part {
+                                    Part::Text { finished, .. } => *finished = true,
+                                    Part::Reasoning { finished, .. } => *finished = true,
+                                    Part::FunctionCall { finished, .. } => *finished = true,
+                                    Part::FunctionResponse { finished, .. } => *finished = true,
+                                    Part::Image { finished, .. } => *finished = true,
+                                    Part::File { finished, .. } => *finished = true,
+                                }
+                            }
+
+                            current_response.finish = match finish_reason.as_str() {
+                                "STOP" => FinishReason::Stop,
+                                "MAX_TOKENS" => FinishReason::OutputTokens,
+                                "SAFETY" => FinishReason::ContentFilter,
+                                "RECITATION" => FinishReason::ContentFilter,
+                                _ => FinishReason::Stop,
+                            };
+                        }
+                    }
+                }
+                
+                yield current_response.clone();
+            }
+        })
+    }
+}
+
+// --- Request Types ---
 
 #[skip_serializing_none]
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Serialize)]
 struct GeminiRequest {
     contents: Vec<GeminiContent>,
-    generation_config: Option<GeminiGenerationConfig>,
-    tools: Option<Vec<GeminiTool>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tools: Vec<GeminiTool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    system_instruction: Option<GeminiContent>,
+    generation_config: GeminiGenerationConfig,
+    safety_settings: Option<Vec<GeminiSafetySetting>>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct GeminiTool {
-    function_declarations: Vec<GeminiFunctionDeclaration>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct GeminiFunctionDeclaration {
-    name: String,
-    description: String,
-    parameters_json_schema: serde_json::Value,
-}
-
-#[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-enum GeminiRole {
-    User,
-    Model,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct GeminiContent {
-    role: GeminiRole,
-    #[serde(default)]
+    role: String,
     parts: Vec<GeminiPart>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct FunctionCall {
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all_fields = "camelCase")]
+#[serde(untagged)]
+enum GeminiPart {
+    Text { 
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        thought: Option<bool>,
+    },
+    FunctionCall { 
+        function_call: GeminiFunctionCall,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        thought_signature: Option<String>,
+    },
+    FunctionResponse { function_response: GeminiFunctionResponse },
+    InlineData { inline_data: GeminiInlineData },
+    FileData { 
+        #[serde(rename = "fileData")]
+        file_data: GeminiFileData,
+    },
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct GeminiFunctionCall {
     name: String,
     args: Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct FunctionResponse {
+#[derive(Debug, Serialize, Deserialize)]
+struct GeminiFunctionResponse {
     name: String,
     response: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parts: Option<Vec<GeminiFunctionResponsePart>>,
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged, rename_all_fields = "camelCase")]
-enum GeminiPart {
-    Text {
-        thought: Option<bool>,
-        text: String,
-    },
-    FunctionCall {
-        thought_signature: Option<String>,
-        function_call: FunctionCall,
-    },
-    FunctionResponse {
-        function_response: FunctionResponse,
-    },
+#[derive(Debug, Serialize, Deserialize)]
+struct GeminiFunctionResponsePart {
+    #[serde(rename = "inlineData")]
+    inline_data: GeminiFunctionResponseBlob,
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
+struct GeminiFunctionResponseBlob {
+    #[serde(rename = "mimeType")]
+    mime_type: String,
+    data: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct GeminiFileData {
+    #[serde(rename = "mimeType")]
+    mime_type: Option<String>,
+    #[serde(rename = "fileUri")]
+    file_uri: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct GeminiInlineData {
+    mime_type: String,
+    data: String,
+}
+
+#[derive(Debug, Serialize)]
+struct GeminiTool {
+    function_declarations: Vec<GeminiFunctionDeclaration>,
+}
+
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct GeminiThinkingConfig {
-    include_thoughts: Option<bool>,
-    thinking_budget: Option<u32>,
+struct GeminiFunctionDeclaration {
+    name: String,
+    description: String,
+    parameters_json_schema: Option<Value>,
 }
 
-#[skip_serializing_none]
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct GeminiGenerationConfig {
     temperature: Option<f32>,
     top_p: Option<f32>,
+    top_k: Option<u32>,
     max_output_tokens: Option<u32>,
+    stop_sequences: Option<Vec<String>>,
+    response_mime_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     thinking_config: Option<GeminiThinkingConfig>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct GeminiResponse {
-    candidates: NonEmpty<GeminiCandidate>,
-    #[allow(dead_code)]
-    model_version: Option<String>,
-    usage_metadata: Option<GeminiUsageMetadata>,
+struct GeminiThinkingConfig {
+    include_thoughts: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking_budget: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking_level: Option<GeminiThinkingLevel>,
 }
 
-#[derive(Debug, Copy, Clone, Deserialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-enum GeminiFinishReason {
-    Stop,
-    MaxTokens,
-    Safety,
-    Language,
-    Blocklist,
-    ProhibitedContent,
-    Spii,
-    ImageSafety,
-    ImageProhibitedContent,
-    ImageRecitation,
-    MalformedFunctionCall,
-    UnexpectedToolCall,
-    TooManyToolCalls,
-    #[serde(other)]
-    Other,
-}
+impl GeminiRequest {
+    async fn new(
+        client: &GeminiClient,
+        messages_in: Vec<Message>,
+        model_options: &ModelOptions<GeminiModel>,
+        tool_defs: Vec<rmcp::model::Tool>,
+    ) -> Result<Self, ClientError> {
+        let mut contents = Vec::new();
+        
+        for msg in messages_in {
+            let role = match msg {
+                Message::User(_) => "user",
+                Message::Assistant(_) => "model",
+            };
+            
+            let mut parts = Vec::new();
+            for part in msg.parts() {
+                match part {
+                    Part::Text { content: t, .. } => parts.push(GeminiPart::Text { text: t.clone(), thought: None }),
+                    Part::Reasoning { content, .. } => parts.push(GeminiPart::Text { text: content.clone(), thought: Some(true) }),
+                    Part::Image { data, mime_type, .. } => {
+                        parts.push(GeminiPart::InlineData {
+                            inline_data: GeminiInlineData {
+                                mime_type: mime_type.clone(),
+                                data: data.clone(),
+                            },
+                        });
+                    }
+                    Part::File { data, mime_type, .. } => {
+                        let bytes = BASE64_STANDARD.decode(&data)
+                            .map_err(|_| ClientError::Config("Invalid base64 in file part".to_string()))?;
+                        let file_uri = client.upload_file(&mime_type, &bytes).await?;
 
-impl From<GeminiFinishReason> for FinishReason {
-    fn from(reason: GeminiFinishReason) -> Self {
-        match reason {
-            GeminiFinishReason::Stop => FinishReason::Stop,
-            GeminiFinishReason::MaxTokens => FinishReason::OutputTokens,
-            GeminiFinishReason::Safety
-            | GeminiFinishReason::Language
-            | GeminiFinishReason::Blocklist
-            | GeminiFinishReason::ProhibitedContent
-            | GeminiFinishReason::Spii
-            | GeminiFinishReason::ImageSafety
-            | GeminiFinishReason::ImageProhibitedContent
-            | GeminiFinishReason::ImageRecitation => FinishReason::ContentFilter,
-            GeminiFinishReason::MalformedFunctionCall
-            | GeminiFinishReason::UnexpectedToolCall
-            | GeminiFinishReason::TooManyToolCalls => FinishReason::ToolCalls,
-            GeminiFinishReason::Other => FinishReason::Stop,
+                        parts.push(GeminiPart::FileData {
+                            file_data: GeminiFileData {
+                                mime_type: Some(mime_type.clone()),
+                                file_uri,
+                            },
+                        });
+                    }
+                    Part::FunctionCall { name, arguments, signature, .. } => {
+                        parts.push(GeminiPart::FunctionCall {
+                            function_call: GeminiFunctionCall {
+                                name: name.clone(),
+                                args: arguments.clone(),
+                            },
+                            thought_signature: signature.clone(),
+                        });
+                    }
+                    Part::FunctionResponse { name, response, parts: inner_parts, .. } => {
+                        let mut parts_vec = Vec::new();
+                        
+                        for part in inner_parts {
+                            match part {
+                                Part::Image { data, mime_type, .. } | Part::File { data, mime_type, .. } => {
+                                    parts_vec.push(GeminiFunctionResponsePart {
+                                        inline_data: GeminiFunctionResponseBlob {
+                                            mime_type: mime_type.clone(),
+                                            data: data.clone(),
+                                        }
+                                    });
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        let function_response_parts = if parts_vec.is_empty() { None } else { Some(parts_vec) };
+
+                        parts.push(GeminiPart::FunctionResponse {
+                            function_response: GeminiFunctionResponse {
+                                name: name.clone(),
+                                response: response.clone(),
+                                parts: function_response_parts,
+                            },
+                        });
+                    }
+                }
+            }
+            
+            if !parts.is_empty() {
+                contents.push(GeminiContent {
+                    role: role.to_string(),
+                    parts,
+                });
+            }
         }
+
+        let tools = if !tool_defs.is_empty() {
+            vec![GeminiTool {
+                function_declarations: tool_defs.into_iter().map(|t| GeminiFunctionDeclaration {
+                    name: t.name.into_owned(),
+                    description: t.description.map(|d| d.into_owned()).unwrap_or_default(),
+                    parameters_json_schema: Some(Value::Object((*t.input_schema).clone())),
+                }).collect(),
+            }]
+        } else {
+            Vec::new()
+        };
+
+        let system_instruction = model_options.system.as_ref().map(|s| GeminiContent {
+            role: "user".to_string(),
+            parts: vec![GeminiPart::Text { text: s.clone(), thought: None }],
+        });
+
+        Ok(GeminiRequest {
+            contents,
+            tools,
+            system_instruction,
+            generation_config: GeminiGenerationConfig {
+                temperature: model_options.temperature,
+                top_p: model_options.top_p,
+                top_k: model_options.provider.top_k,
+                max_output_tokens: model_options.max_tokens,
+                stop_sequences: model_options.provider.stop_sequences.clone(),
+                response_mime_type: model_options.provider.response_mime_type.clone(),
+                thinking_config: if model_options.reasoning.unwrap_or(false) || model_options.provider.include_thoughts.unwrap_or(false) {
+                    Some(GeminiThinkingConfig {
+                        include_thoughts: Some(true),
+                        thinking_budget: model_options.provider.thinking_budget,
+                        thinking_level: model_options.provider.thinking_level.clone(),
+                    })
+                } else {
+                    None
+                },
+            },
+            safety_settings: model_options.provider.safety_settings.clone(),
+        })
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+// --- Response Types ---
+
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct GeminiCandidate {
-    content: GeminiContent,
-    finish_reason: Option<GeminiFinishReason>,
+struct GeminiResponse {
+    candidates: Option<Vec<GeminiCandidate>>,
+    usage_metadata: Option<GeminiUsageMetadata>,
 }
 
-#[derive(Debug, Copy, Clone, Deserialize)]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GeminiCandidate {
+    content: Option<GeminiContent>,
+    finish_reason: Option<String>,
+    index: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GeminiUsageMetadata {
     prompt_token_count: u32,
     candidates_token_count: Option<u32>,
+    total_token_count: u32,
     thoughts_token_count: Option<u32>,
 }
 
-impl From<GeminiUsageMetadata> for Usage {
-    fn from(u: GeminiUsageMetadata) -> Self {
-        Usage {
-            prompt_tokens: Some(u.prompt_token_count),
-            completion_tokens: Some(
-                u.candidates_token_count.unwrap_or_default()
-                    + u.thoughts_token_count.unwrap_or_default(),
-            ),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Deserialize)]
 struct GeminiErrorResponse {
     error: GeminiError,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Deserialize)]
 struct GeminiError {
     code: u32,
     message: String,
+    status: String,
+}
+
+impl From<GeminiResponse> for Response {
+    fn from(resp: GeminiResponse) -> Self {
+        let mut parts = Vec::new();
+        let mut finish_reason = FinishReason::Unfinished;
+
+        if let Some(mut candidates) = resp.candidates {
+            if !candidates.is_empty() {
+                let candidate = candidates.remove(0);
+                if let Some(content) = candidate.content {
+                    for part in content.parts {
+                        match part {
+                            GeminiPart::Text { text, thought } => {
+                                if thought.unwrap_or(false) {
+                                    parts.push(Part::Reasoning {
+                                        content: text,
+                                        summary: None,
+                                        signature: None,
+                                        finished: true,
+                                    });
+                                } else {
+                                    parts.push(Part::Text { content: text, finished: true });
+                                }
+                            }
+                            GeminiPart::FunctionCall { function_call, thought_signature } => {
+                                parts.push(Part::FunctionCall {
+                                    id: None,
+                                    name: function_call.name,
+                                    arguments: function_call.args,
+                                    signature: thought_signature,
+                                    finished: true,
+                                });
+                            }
+                            GeminiPart::FunctionResponse { function_response } => {
+                                let mut inner_parts = Vec::new();
+                                if let Some(gemini_parts) = function_response.parts {
+                                    for p in gemini_parts {
+                                        inner_parts.push(Part::File {
+                                            data: p.inline_data.data,
+                                            mime_type: p.inline_data.mime_type,
+                                            uri: None,
+                                            finished: true,
+                                        });
+                                    }
+                                }
+
+                                parts.push(Part::FunctionResponse {
+                                    id: None,
+                                    name: function_response.name,
+                                    response: function_response.response,
+                                    parts: inner_parts,
+                                    finished: true,
+                                });
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                
+                if let Some(reason) = candidate.finish_reason {
+                    finish_reason = match reason.as_str() {
+                        "STOP" => FinishReason::Stop,
+                        "MAX_TOKENS" => FinishReason::OutputTokens,
+                        "SAFETY" => FinishReason::ContentFilter,
+                        "RECITATION" => FinishReason::ContentFilter,
+                        _ => FinishReason::Stop,
+                    };
+                }
+            }
+        }
+
+        let usage = resp.usage_metadata.map(|u| Usage {
+            prompt_tokens: Some(u.prompt_token_count),
+            completion_tokens: Some(u.candidates_token_count.unwrap_or(0) + u.thoughts_token_count.unwrap_or(0)),
+        }).unwrap_or_default();
+
+        Response {
+            data: vec![Message::Assistant(parts)],
+            usage,
+            finish: finish_reason,
+        }
+    }
 }

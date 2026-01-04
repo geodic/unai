@@ -9,7 +9,7 @@ use serde::Deserialize;
 use unai::mcp::MCPServerImpl;
 use unai::model::{Message, Part, Role};
 use unai::options::{ModelOptions, TransportOptions};
-use unai::providers::{Gemini, Provider};
+use unai::providers::{Groq, Provider};
 use unai::Agent;
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -60,10 +60,10 @@ impl ServerHandler for WeatherTools {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
-    let api_key = std::env::var("GEMINI_API_KEY").expect("GEMINI_API_KEY must be set");
+    let api_key = std::env::var("GROQ_API_KEY").expect("GROQ_API_KEY must be set");
 
     let model_options = ModelOptions {
-        model: Some("gemini-2.5-flash".to_string()),
+        model: Some("openai/gpt-oss-20b".to_string()),
         system: Some("You are an expert English linguist, writer, and weather analyst. \
             You have access to tools to get real-time data. \
             Your goal is to provide high-quality, long-form literary analyses. \
@@ -71,13 +71,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     };
 
-    let client = Gemini::create_with_options(api_key, model_options, TransportOptions::default());
+    let client = Groq::create_with_options(api_key, model_options, TransportOptions::default());
     let agent = Agent::new(client);
 
-    let messages = vec![Message::User(vec![Part::Text {
-        content: "You are an expect English linguist and writer. Can you give me an 5 paragraph essay-like analysis on the weather in Tokyo?".to_string(),
-        finished: true,
-    }])];
+    let messages = vec![
+        Message::User(vec![Part::Text {
+            content: "Can you give me a 5 paragraph essay-like analysis on the weather in Tokyo?".to_string(),
+            finished: true,
+        }])
+    ];
 
     let tools_handler = WeatherTools::new();
 
@@ -117,32 +119,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         std::io::stdout().flush()?;
                         printed_len = content.len();
                     }
-                    
-                    // Check for tool calls/responses to print them
-                    for part in msg.parts() {
-                        match part {
-                            Part::FunctionCall { name, arguments, finished, .. } => {
-                                if *finished {
-                                    // We might print this multiple times if we don't track it?
-                                    // But finished only becomes true once.
-                                    // Actually, response is accumulated. So it stays true.
-                                    // We need to avoid re-printing.
-                                    println!("\nTool Call: {} {}", name, arguments);
-                                }
-                            }
-                            Part::FunctionResponse { name, response, .. } => {
-                                // This comes in a separate message (User role) usually.
-                                // And it's usually short.
-                                println!("\nTool Result: {} {:?}", name, response);
-                            }
-                            _ => {}
-                        }
-                    }
                 }
                 
                 if response.finish != unai::model::FinishReason::Unfinished {
                     println!("\n[Finish: {:?}]", response.finish);
-                    printed_len = 0; // Reset for next turn if any
+                    printed_len = 0;
                 }
             },
             Err(e) => {

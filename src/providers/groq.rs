@@ -1,9 +1,9 @@
 //! Groq API client implementation.
 
-use serde::{Deserialize, Serialize};
 use crate::api::openai::{OpenAiCompatibleClient, OpenAiCompatibleModel};
 use crate::options::{ModelOptions, TransportOptions};
 use crate::providers::Provider;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct GroqModel;
@@ -20,7 +20,7 @@ impl Provider for Groq {
     fn create(api_key: String) -> Self::Client {
         GroqClient::new(
             api_key,
-            "https://api.groq.com/openai".to_string(),
+            "https://api.groq.com/openai/v1".to_string(),
             ModelOptions::default(),
             TransportOptions::default(),
         )
@@ -33,7 +33,7 @@ impl Provider for Groq {
     ) -> Self::Client {
         GroqClient::new(
             api_key,
-            "https://api.groq.com/openai".to_string(),
+            "https://api.groq.com/openai/v1".to_string(),
             model_options,
             transport_options,
         )

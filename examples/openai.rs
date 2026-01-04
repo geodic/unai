@@ -1,7 +1,7 @@
-use unai::model::{Message, Role, Part};
+use unai::model::{Message, Part, Role};
 use unai::options::{ModelOptions, TransportOptions};
 use unai::providers::{OpenAi, Provider};
-use unai::{Agent};
+use unai::Agent;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -13,19 +13,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Create client with options
-    let client = OpenAi::create_with_options(
-        api_key,
-        model_options,
-        TransportOptions::default(),
-    );
+    let client = OpenAi::create_with_options(api_key, model_options, TransportOptions::default());
 
     // Create agent with client
     let agent = Agent::new(client);
 
-    let messages = vec![Message::User(vec![Part::Text("Hello, world!".to_string())])];
+    let messages = vec![Message::User(vec![Part::Text { content: "Hello, world!".to_string(), finished: true }])];
 
-    let response = agent.chat(messages, vec![]).await?;
-    println!("Response: {:?}", response.data.first().and_then(|m| m.content()));
+    let response = agent.chat(messages).await?;
+    println!(
+        "Response: {:?}",
+        response.data.first().and_then(|m| m.content())
+    );
 
     Ok(())
 }

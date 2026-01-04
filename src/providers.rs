@@ -19,33 +19,33 @@ pub trait Provider {
     ) -> Self::Client;
 }
 
-pub mod gemini;
-pub mod openai;
-pub mod groq;
+pub mod anthropic;
+pub mod deepseek;
 pub mod fireworks;
-pub mod together;
+pub mod gemini;
+pub mod groq;
 pub mod hyperbolic;
+pub mod mistral;
+pub mod moonshot;
+pub mod ollama;
+pub mod openai;
 pub mod openrouter;
 pub mod perplexity;
-pub mod mistral;
-pub mod deepseek;
-pub mod moonshot;
+pub mod together;
 pub mod xai;
-pub mod ollama;
-pub mod anthropic;
 
 // Re-export for convenience
-pub use gemini::{Gemini, GeminiClient, GeminiModel};
-pub use openai::{OpenAi, OpenAiClient, OpenAiModel};
-pub use groq::{Groq, GroqClient, GroqModel};
+pub use anthropic::{Anthropic, AnthropicClient, AnthropicModel};
+pub use deepseek::{DeepSeek, DeepSeekClient, DeepSeekModel};
 pub use fireworks::{Fireworks, FireworksClient, FireworksModel};
-pub use together::{Together, TogetherClient, TogetherModel};
+pub use gemini::{Gemini, GeminiClient, GeminiModel};
+pub use groq::{Groq, GroqClient, GroqModel};
 pub use hyperbolic::{Hyperbolic, HyperbolicClient, HyperbolicModel};
+pub use mistral::{Mistral, MistralClient, MistralModel};
+pub use moonshot::{Moonshot, MoonshotClient, MoonshotModel};
+pub use ollama::{Ollama, OllamaClient, OllamaModel};
+pub use openai::{OpenAi, OpenAiClient, OpenAiModel};
 pub use openrouter::{OpenRouter, OpenRouterClient, OpenRouterModel};
 pub use perplexity::{Perplexity, PerplexityClient, PerplexityModel};
-pub use mistral::{Mistral, MistralClient, MistralModel};
-pub use deepseek::{DeepSeek, DeepSeekClient, DeepSeekModel};
-pub use moonshot::{Moonshot, MoonshotClient, MoonshotModel};
-pub use xai::{XAI, XAIClient, XAIModel};
-pub use ollama::{Ollama, OllamaClient, OllamaModel};
-pub use anthropic::{Anthropic, AnthropicClient, AnthropicModel};
+pub use together::{Together, TogetherClient, TogetherModel};
+pub use xai::{XAIClient, XAIModel, XAI};

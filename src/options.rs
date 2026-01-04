@@ -14,7 +14,7 @@ pub struct ModelOptions<T> {
     pub model: Option<String>,
 
     // System instructions passed to the model
-    pub instructions: Option<String>,
+    pub system: Option<String>,
 
     /// Enable reasoning/thinking mode (for models that support it)
     pub reasoning: Option<bool>,

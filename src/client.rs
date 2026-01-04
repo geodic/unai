@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use futures::Stream;
 use thiserror::Error;
 
-use crate::model::{Response, StreamChunk, Message};
+use crate::model::{Message, Response};
 use crate::options::{ModelOptions, TransportOptions};
 use rmcp::model::Tool;
 
@@ -34,7 +34,11 @@ pub trait Client: Send + Sync {
     type ModelProvider: Send + Sync;
 
     /// Send a request to the LLM provider.
-    async fn request(&self, messages: Vec<Message>, tools: Vec<Tool>) -> Result<Response, ClientError>;
+    async fn request(
+        &self,
+        messages: Vec<Message>,
+        tools: Vec<Tool>,
+    ) -> Result<Response, ClientError>;
 
     /// Get reference to the model options.
     fn model_options(&self) -> &ModelOptions<Self::ModelProvider>;
@@ -51,5 +55,8 @@ pub trait StreamingClient: Client {
         &self,
         messages: Vec<Message>,
         tools: Vec<Tool>,
-    ) -> Result<std::pin::Pin<Box<dyn Stream<Item = Result<StreamChunk, ClientError>> + Send>>, ClientError>;
+    ) -> Result<
+        std::pin::Pin<Box<dyn Stream<Item = Result<Response, ClientError>> + Send>>,
+        ClientError,
+    >;
 }

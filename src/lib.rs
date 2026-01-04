@@ -56,19 +56,19 @@ pub mod agent;
 pub mod api;
 pub mod client;
 pub mod http;
+pub mod mcp;
 pub mod model;
 pub mod options;
 pub mod providers;
 pub mod sse;
 pub mod stream;
 pub mod tools;
-pub mod mcp;
 
 pub use agent::Agent;
-pub use mcp::McpServer;
 pub use client::{Client, ClientError, StreamingClient};
+pub use mcp::{MCPServer, AttachResources};
 pub use model::{GeneralRequest, Message, Response};
-pub use stream::StreamChunk;
+// pub use stream::StreamChunk;
 pub use tools::{Tool, ToolError, ToolService};
 
 // Re-export rmcp for convenience

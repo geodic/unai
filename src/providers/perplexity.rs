@@ -1,9 +1,9 @@
 //! Perplexity API client implementation.
 
-use serde::{Deserialize, Serialize};
 use crate::api::openai::{OpenAiCompatibleClient, OpenAiCompatibleModel};
 use crate::options::{ModelOptions, TransportOptions};
 use crate::providers::Provider;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PerplexityModel;

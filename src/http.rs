@@ -2,12 +2,11 @@
 
 use reqwest::{Client, RequestBuilder};
 
+use crate::client::ClientError;
 use crate::options::TransportOptions;
 
 /// Build a configured HTTP client from transport options.
-pub fn build_http_client(
-    transport_options: &TransportOptions,
-) -> Result<Client, reqwest::Error> {
+pub fn build_http_client(transport_options: &TransportOptions) -> Result<Client, reqwest::Error> {
     let mut builder = Client::builder();
 
     match transport_options {
@@ -67,7 +66,7 @@ pub trait ResponseExt {
     async fn text_logged(self) -> Result<String, reqwest::Error>;
 
     /// Parse response as JSON and log it. Consumes the response.
-    async fn json_logged<T: serde::de::DeserializeOwned>(self) -> Result<T, serde_json::Error>;
+    async fn json_logged<T: serde::de::DeserializeOwned>(self) -> Result<T, ClientError>;
 }
 
 #[async_trait::async_trait]
@@ -78,17 +77,13 @@ impl ResponseExt for reqwest::Response {
         Ok(text)
     }
 
-    async fn json_logged<T: serde::de::DeserializeOwned>(self) -> Result<T, serde_json::Error> {
-        // Get bytes - if this fails, the HTTP call already failed, so we panic
-        let bytes = self
-            .bytes()
-            .await
-            .expect("Failed to read response bytes after successful HTTP call");
+    async fn json_logged<T: serde::de::DeserializeOwned>(self) -> Result<T, ClientError> {
+        let bytes = self.bytes().await?;
 
         if let Ok(text) = std::str::from_utf8(&bytes) {
             tracing::debug!("API response ({} bytes):\n{}", text.len(), text);
         }
 
-        serde_json::from_slice(&bytes)
+        serde_json::from_slice(&bytes).map_err(ClientError::from)
     }
 }
