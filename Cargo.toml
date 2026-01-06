@@ -1,11 +1,11 @@
 [package]
-name = "unai"
+name = "unia"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
 readme = "README.md"
 description = "A pragmatic, provider-agnostic Rust LLM client."
-repository = "https://github.com/geodic/unai"
+repository = "https://github.com/geodic/unia"
 
 [dependencies]
 tokio = { version = "1.41", features = ["full"] }

@@ -1,18 +1,18 @@
-# unai
+# unia
 
-[![Crates.io](https://img.shields.io/crates/v/unai.svg)](https://crates.io/crates/unai)
-[![Documentation](https://docs.rs/unai/badge.svg)](https://docs.rs/unai)
+[![Crates.io](https://img.shields.io/crates/v/unia.svg)](https://crates.io/crates/unia)
+[![Documentation](https://docs.rs/unia/badge.svg)](https://docs.rs/unia)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 > **⚠️ Warning: Heavy Development**  
 > This library is currently under active and heavy development. APIs are subject to change, and future updates may introduce breaking changes. Use with caution in production environments.
 
-**unai** (Universal AI) is a pragmatic, provider-agnostic Rust library designed to unify interactions with various Large Language Model (LLM) providers. It abstracts away the differences between APIs (OpenAI, Anthropic, Gemini, etc.) into a single, consistent interface, while providing powerful features like automatic tool execution (Agents) and Model Context Protocol (MCP) integration.
+**unia** is a pragmatic, provider-agnostic Rust library designed to unify interactions with various Large Language Model (LLM) providers. It abstracts away the differences between APIs (OpenAI, Anthropic, Gemini, etc.) into a single, consistent interface, while providing powerful features like automatic tool execution (Agents) and Model Context Protocol (MCP) integration.
 
 ## Key Features
 
 ### Universal Client Interface
-Write your code once and switch providers with a single line of configuration. `unai` normalizes:
+Write your code once and switch providers with a single line of configuration. `unia` normalizes:
 - **Authentication**: Standardized API key handling.
 - **Request/Response Models**: Unified `Message`, `Part`, and `Response` structs.
 - **Streaming**: Consistent Server-Sent Events (SSE) handling across all providers.
@@ -54,16 +54,16 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-unai = "0.1.0"
+unia = "0.1.0"
 tokio = { version = "1.0", features = ["full"] }
 ```
 
 ## Simple Example
 
 ```rust
-use unai::client::Client;
-use unai::model::{Message, Part};
-use unai::providers::{OpenAI, Provider};
+use unia::client::Client;
+use unia::model::{Message, Part};
+use unia::providers::{OpenAI, Provider};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

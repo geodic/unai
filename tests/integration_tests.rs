@@ -1,6 +1,6 @@
-use unai::client::Client;
-use unai::model::{Message, Part, Role};
-use unai::providers::{OpenAI, Provider};
+use unia::client::Client;
+use unia::model::{Message, Part, Role};
+use unia::providers::{OpenAI, Provider};
 
 #[test]
 fn test_client_creation() {

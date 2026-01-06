@@ -5,9 +5,9 @@ use rmcp::{
     schemars, tool, tool_handler, tool_router, ServerHandler,
 };
 use serde::Deserialize;
-use unai::model::{Message, Part};
-use unai::providers::{OpenAI, Provider};
-use unai::Agent;
+use unia::model::{Message, Part};
+use unia::providers::{OpenAI, Provider};
+use unia::Agent;
 
 // ============================================================================================
 // Step 1: Define Tool Arguments

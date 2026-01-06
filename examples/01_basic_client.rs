@@ -1,4 +1,4 @@
-use unai::{
+use unia::{
     model::{Message, Part},
     providers::{openai::OpenAI, Provider},
     Client,
@@ -9,7 +9,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ============================================================================================
     // Step 1: Setup the Provider
     // ============================================================================================
-    // Unai is designed to be provider-agnostic. You can switch between OpenAI, Anthropic, Gemini,
+    // unia is designed to be provider-agnostic. You can switch between OpenAI, Anthropic, Gemini,
     // and others by simply changing the provider struct (e.g., `OpenAI` -> `Anthropic`).
     //
     // The `Provider` trait defines a `create` method that takes your API key and the model name.
@@ -20,7 +20,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ============================================================================================
     // Step 2: Construct the Message
     // ============================================================================================
-    // Messages in Unai are structured to support multimodal content (text, images, files).
+    // Messages in unia are structured to support multimodal content (text, images, files).
     // A `Message` is an enum representing the role (User, Assistant, System, Tool).
     // Each message contains a vector of `Part`s.
     //

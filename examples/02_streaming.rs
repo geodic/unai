@@ -1,6 +1,6 @@
 use futures::StreamExt;
 use std::io::{self, Write};
-use unai::{
+use unia::{
     model::{Message, Part},
     providers::{openai::OpenAI, Provider},
     StreamingClient,
@@ -32,7 +32,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // This stream yields `Result<Response, ClientError>` items.
     //
     // IMPORTANT: Unlike many other libraries that yield "deltas" (just the new characters),
-    // Unai yields the **entire generated response object so far** in every iteration.
+    // unia yields the **entire generated response object so far** in every iteration.
     // This makes it easier to reason about the state of the response, but requires you to
     // calculate the difference if you want to print only the new characters.
     let mut stream = client.request_stream(messages, vec![]).await?;

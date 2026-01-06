@@ -1,6 +1,6 @@
-# unai Examples
+# unia Examples
 
-This directory contains tutorial-like examples demonstrating the core features of the `unai` library.
+This directory contains tutorial-like examples demonstrating the core features of the `unia` library.
 
 ## Running Examples
 

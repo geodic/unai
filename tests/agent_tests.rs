@@ -1,10 +1,10 @@
 use async_trait::async_trait;
 use rmcp::model::Tool;
 use std::sync::{Arc, Mutex};
-use unai::agent::Agent;
-use unai::client::{Client, ClientError};
-use unai::model::{FinishReason, Message, Part, Response, Usage};
-use unai::options::{ModelOptions, TransportOptions};
+use unia::agent::Agent;
+use unia::client::{Client, ClientError};
+use unia::model::{FinishReason, Message, Part, Response, Usage};
+use unia::options::{ModelOptions, TransportOptions};
 
 #[derive(Clone)]
 struct MockClient {

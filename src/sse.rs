@@ -22,7 +22,7 @@ use crate::client::ClientError;
 ///
 /// # Example
 /// ```ignore
-/// use unai::sse::SSEResponseExt;
+/// use unia::sse::SSEResponseExt;
 /// use futures::StreamExt;
 ///
 /// let response = client.get("https://api.example.com/stream").send().await?;
@@ -119,7 +119,7 @@ impl SSEResponseExt for reqwest::Response {
 ///
 /// # Example
 /// ```
-/// use unai::sse::parse_sse_line;
+/// use unia::sse::parse_sse_line;
 ///
 /// let line = "data: {\"key\": \"value\"}";
 /// assert_eq!(parse_sse_line(line), Some("{\"key\": \"value\"}"));
@@ -137,7 +137,7 @@ pub fn parse_sse_line(line: &str) -> Option<&str> {
 ///
 /// # Example
 /// ```
-/// use unai::sse::is_done_marker;
+/// use unia::sse::is_done_marker;
 ///
 /// assert!(is_done_marker("[DONE]"));
 /// assert!(!is_done_marker(""));

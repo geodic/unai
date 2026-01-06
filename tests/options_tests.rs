@@ -1,6 +1,6 @@
 use std::time::Duration;
-use unai::options::{ModelOptions, TransportOptions};
-use unai::providers::OpenAIModel;
+use unia::options::{ModelOptions, TransportOptions};
+use unia::providers::OpenAIModel;
 
 #[test]
 fn test_transport_options_builder() {

@@ -19,9 +19,9 @@ use crate::mcp::MCPServer;
 ///
 /// # Example
 /// ```ignore
-/// use unai::agent::Agent;
-/// use unai::providers::{Gemini, Provider};
-/// use unai::model::{Message, Part};
+/// use unia::agent::Agent;
+/// use unia::providers::{Gemini, Provider};
+/// use unia::model::{Message, Part};
 ///
 /// let client = Gemini::create("api_key".to_string(), "gemini-3.0-pro".to_string());
 /// let agent = Agent::new(client)

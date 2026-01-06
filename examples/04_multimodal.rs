@@ -1,5 +1,5 @@
 use base64::{engine::general_purpose, Engine as _};
-use unai::{
+use unia::{
     model::{MediaType, Message, Part},
     providers::{openai::OpenAI, Provider},
     Client,
@@ -19,7 +19,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Step 2: Fetch Image Data
     // ============================================================================================
     // Most LLM APIs require images to be sent as base64-encoded strings or via a URL.
-    // Unai handles the formatting, but you need to provide the raw data or the URI.
+    // unia handles the formatting, but you need to provide the raw data or the URI.
     //
     // Here, we download an image from the web and encode it as base64.
     let image_url = "https://picsum.photos/id/13/2500/1667";

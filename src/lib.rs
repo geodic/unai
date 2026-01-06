@@ -1,4 +1,4 @@
-//! # unai - Universal AI Client Library
+//! # unia - Universal AI Client Library
 //!
 //! A small, pragmatic Rust library providing a provider-agnostic LLM client architecture
 //! with a fully generic options system.
@@ -29,9 +29,9 @@
 //!
 //! ## Example
 //! ```no_run
-//! use unai::client::Client;
-//! use unai::model::{Message, Part};
-//! use unai::providers::{OpenAI, Provider};
+//! use unia::client::Client;
+//! use unia::model::{Message, Part};
+//! use unia::providers::{OpenAI, Provider};
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {

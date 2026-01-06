@@ -1,5 +1,5 @@
 use rmcp::{transport::StreamableHttpClientTransport, ServiceExt};
-use unai::{
+use unia::{
     mcp::MCPServer,
     providers::{openai::OpenAI, Provider},
     Agent,
@@ -63,7 +63,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let prompt_result = mcp_server.get_prompt(first_prompt, None).await?;
 
         // Convert Served<GetPromptResult> to Vec<Message> using From implementation
-        let messages: Vec<unai::model::Message> = prompt_result.into();
+        let messages: Vec<unia::model::Message> = prompt_result.into();
         println!("Converted prompt to {} messages", messages.len());
 
         // You can now pass these messages to the agent
@@ -76,11 +76,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let resource_result = mcp_server.read_resource(first_resource).await?;
 
         // Convert Served<ReadResourceResult> to Vec<Part> using From implementation
-        let parts: Vec<unai::model::Part> = resource_result.into();
+        let parts: Vec<unia::model::Part> = resource_result.into();
         println!("Converted resource to {} parts", parts.len());
 
         // You can attach these parts to a user message
-        // let message = unai::model::Message::User(parts);
+        // let message = unia::model::Message::User(parts);
     }
 
     let _agent = agent.with_server(mcp_server);
