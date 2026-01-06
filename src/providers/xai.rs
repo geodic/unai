@@ -1,6 +1,6 @@
 //! xAI API client implementation.
 
-use crate::api::openai::{OpenAiCompatibleClient, OpenAiCompatibleModel};
+use crate::api::openai::{OpenAIClient, OpenAICompatibleModel};
 use crate::options::{ModelOptions, TransportOptions};
 use crate::providers::Provider;
 use serde::{Deserialize, Serialize};
@@ -8,20 +8,19 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct XAIModel;
 
-impl OpenAiCompatibleModel for XAIModel {}
+impl OpenAICompatibleModel for XAIModel {}
 
-pub type XAIClient = OpenAiCompatibleClient<XAIModel>;
+pub type XAIClient = OpenAIClient<XAIModel>;
 
 pub struct XAI;
 
 impl Provider for XAI {
     type Client = XAIClient;
 
-    fn create(api_key: String) -> Self::Client {
-        XAIClient::new(
+    fn create(api_key: String, model: String) -> Self::Client {
+        Self::create_with_options(
             api_key,
-            "https://api.x.ai".to_string(),
-            ModelOptions::default(),
+            ModelOptions::new(model),
             TransportOptions::default(),
         )
     }

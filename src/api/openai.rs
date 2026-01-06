@@ -1,36 +1,36 @@
 //! OpenAI Chat Completions API client implementation.
 
 use async_trait::async_trait;
-use futures::{Stream, StreamExt, stream};
-use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE, AUTHORIZATION};
+use futures::{Stream, StreamExt};
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use serde_with::skip_serializing_none;
 use std::collections::HashMap;
 use std::pin::Pin;
 
 use crate::client::{Client, ClientError, StreamingClient};
 use crate::http::{add_extra_headers, build_http_client, RequestBuilderExt, ResponseExt};
-use crate::model::{FinishReason, Message, Part, Response, Usage, MediaType};
+use crate::model::{FinishReason, MediaType, Message, Part, Response, Usage};
 use crate::options::{ModelOptions, TransportOptions};
 use crate::sse::SSEResponseExt;
 
 /// Trait for models compatible with OpenAI's Chat Completions API.
-pub trait OpenAiCompatibleModel:
+pub trait OpenAICompatibleModel:
     Send + Sync + Default + Serialize + for<'de> Deserialize<'de> + Clone
 {
 }
 
 /// Generic client for OpenAI-compatible Chat Completions APIs.
 #[derive(Debug, Clone)]
-pub struct OpenAiCompatibleClient<M> {
+pub struct OpenAIClient<M> {
     api_key: String,
     base_url: String,
     model_options: ModelOptions<M>,
     transport_options: TransportOptions,
 }
 
-impl<M: OpenAiCompatibleModel> OpenAiCompatibleClient<M> {
+impl<M: OpenAICompatibleModel> OpenAIClient<M> {
     pub fn new(
         api_key: String,
         base_url: String,
@@ -46,7 +46,7 @@ impl<M: OpenAiCompatibleModel> OpenAiCompatibleClient<M> {
     }
 
     fn handle_error_response(status: reqwest::StatusCode, body: &str) -> ClientError {
-        if let Ok(error_resp) = serde_json::from_str::<OpenAiErrorResponse>(body) {
+        if let Ok(error_resp) = serde_json::from_str::<OpenAIErrorResponse>(body) {
             ClientError::ProviderError(format!(
                 "OpenAI error ({}): {}",
                 error_resp.error.error_type, error_resp.error.message
@@ -64,13 +64,9 @@ impl<M: OpenAiCompatibleModel> OpenAiCompatibleClient<M> {
     ) -> Result<reqwest::RequestBuilder, ClientError> {
         let url = format!("{}/chat/completions", self.base_url);
 
-        let model = self
-            .model_options
-            .model
-            .clone()
-            .ok_or_else(|| ClientError::Config("Model must be specified".to_string()))?;
+        let model = self.model_options.model.clone();
 
-        let request_body = OpenAiRequest::new(messages, &self.model_options, model, tools, stream);
+        let request_body = OpenAIRequest::new(messages, &self.model_options, model, tools, stream);
 
         let http_client = build_http_client(&self.transport_options)?;
 
@@ -84,13 +80,13 @@ impl<M: OpenAiCompatibleModel> OpenAiCompatibleClient<M> {
 
         let mut req = http_client.post(&url).headers(headers);
         req = add_extra_headers(req, &self.transport_options);
-        
+
         Ok(req.json_logged(&request_body))
     }
 }
 
 #[async_trait]
-impl<M: OpenAiCompatibleModel> Client for OpenAiCompatibleClient<M> {
+impl<M: OpenAICompatibleModel> Client for OpenAIClient<M> {
     type ModelProvider = M;
 
     async fn request(
@@ -99,7 +95,7 @@ impl<M: OpenAiCompatibleModel> Client for OpenAiCompatibleClient<M> {
         tools: Vec<rmcp::model::Tool>,
     ) -> Result<Response, ClientError> {
         let req = self.build_request(messages, tools, false)?;
-        
+
         let response = req.send().await?;
         let status = response.status();
 
@@ -108,7 +104,7 @@ impl<M: OpenAiCompatibleModel> Client for OpenAiCompatibleClient<M> {
             return Err(Self::handle_error_response(status, &body));
         }
 
-        let openai_response: OpenAiResponse = response.json_logged().await?;
+        let openai_response: OpenAIResponse = response.json_logged().await?;
         Ok(openai_response.into())
     }
 
@@ -122,15 +118,13 @@ impl<M: OpenAiCompatibleModel> Client for OpenAiCompatibleClient<M> {
 }
 
 #[async_trait]
-impl<M: OpenAiCompatibleModel> StreamingClient for OpenAiCompatibleClient<M> {
+impl<M: OpenAICompatibleModel> StreamingClient for OpenAIClient<M> {
     async fn request_stream(
         &self,
         messages: Vec<Message>,
         tools: Vec<rmcp::model::Tool>,
-    ) -> Result<
-        Pin<Box<dyn Stream<Item = Result<Response, ClientError>> + Send>>,
-        ClientError,
-    > {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<Response, ClientError>> + Send>>, ClientError>
+    {
         let req = self.build_request(messages, tools, true)?;
         let response = req.send().await?;
         let status = response.status();
@@ -140,18 +134,20 @@ impl<M: OpenAiCompatibleModel> StreamingClient for OpenAiCompatibleClient<M> {
             return Err(Self::handle_error_response(status, &body));
         }
 
-        Ok(Box::pin(OpenAiStream::new(response)))
+        Ok(Box::pin(OpenAIStream::create(response)))
     }
 }
 
 // --- Streaming Implementation ---
 
-struct OpenAiStream;
+struct OpenAIStream;
 
-impl OpenAiStream {
-    fn new(response: reqwest::Response) -> impl Stream<Item = Result<Response, ClientError>> + Send {
+impl OpenAIStream {
+    fn create(
+        response: reqwest::Response,
+    ) -> impl Stream<Item = Result<Response, ClientError>> + Send {
         let sse_stream = response.sse();
-        
+
         Box::pin(async_stream::try_stream! {
             let mut stream = Box::pin(sse_stream);
             let mut current_response = Response {
@@ -159,14 +155,14 @@ impl OpenAiStream {
                 usage: Usage::default(),
                 finish: FinishReason::Unfinished,
             };
-            
+
             let mut tool_index_map: HashMap<u32, usize> = HashMap::new();
             let mut current_text_part_index: Option<usize> = None;
 
             while let Some(event_result) = stream.next().await {
                 let event_str = event_result?;
 
-                let chunk_result: OpenAiStreamChunk = serde_json::from_str(&event_str)
+                let chunk_result: OpenAIStreamChunk = serde_json::from_str(&event_str)
                     .map_err(|e| ClientError::ProviderError(format!("JSON parse error: {} | Input: {}", e, event_str)))?;
 
                 if let Some(usage) = chunk_result.usage {
@@ -250,7 +246,7 @@ impl OpenAiStream {
                         };
                     }
                 }
-                
+
                 yield current_response.clone();
             }
         })
@@ -261,50 +257,50 @@ impl OpenAiStream {
 
 #[skip_serializing_none]
 #[derive(Debug, Serialize)]
-struct OpenAiRequest<M> {
+struct OpenAIRequest<M> {
     model: String,
-    messages: Vec<OpenAiMessage>,
-    max_tokens: Option<u32>, // OpenAI uses max_tokens or max_completion_tokens
+    messages: Vec<OpenAIMessage>,
+    max_tokens: Option<u32>,
     #[serde(rename = "max_completion_tokens")]
-    max_completion_tokens: Option<u32>, // For o1/o3 models
+    max_completion_tokens: Option<u32>,
     temperature: Option<f32>,
     top_p: Option<f32>,
     stream: Option<bool>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    tools: Vec<OpenAiTool>,
+    tools: Vec<OpenAITool>,
     #[serde(flatten)]
     provider_options: M,
 }
 
 #[derive(Debug, Serialize)]
-struct OpenAiMessage {
+struct OpenAIMessage {
     role: String,
-    content: OpenAiContent,
+    content: OpenAIContent,
     #[serde(skip_serializing_if = "Option::is_none")]
     name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_call_id: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    tool_calls: Vec<OpenAiToolCall>,
+    tool_calls: Vec<OpenAIToolCall>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
-enum OpenAiContent {
+enum OpenAIContent {
     Text(String),
-    Parts(Vec<OpenAiContentPart>),
+    Parts(Vec<OpenAIContentPart>),
 }
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-enum OpenAiContentPart {
+enum OpenAIContentPart {
     Text { text: String },
-    ImageUrl { image_url: OpenAiImageUrl },
-    File { file: OpenAiFileContent },
+    ImageUrl { image_url: OpenAIImageUrl },
+    File { file: OpenAIFileContent },
 }
 
 #[derive(Debug, Serialize)]
-struct OpenAiFileContent {
+struct OpenAIFileContent {
     #[serde(skip_serializing_if = "Option::is_none")]
     file_data: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -314,39 +310,39 @@ struct OpenAiFileContent {
 }
 
 #[derive(Debug, Serialize)]
-struct OpenAiImageUrl {
+struct OpenAIImageUrl {
     url: String,
 }
 
 #[derive(Debug, Serialize)]
-struct OpenAiTool {
+struct OpenAITool {
     #[serde(rename = "type")]
     tool_type: String,
-    function: OpenAiFunction,
+    function: OpenAIFunction,
 }
 
 #[derive(Debug, Serialize)]
-struct OpenAiFunction {
+struct OpenAIFunction {
     name: String,
     description: Option<String>,
     parameters: Value,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct OpenAiToolCall {
+struct OpenAIToolCall {
     id: String,
     #[serde(rename = "type")]
     call_type: String,
-    function: OpenAiFunctionCall,
+    function: OpenAIFunctionCall,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct OpenAiFunctionCall {
+struct OpenAIFunctionCall {
     name: String,
     arguments: String,
 }
 
-impl<M: OpenAiCompatibleModel> OpenAiRequest<M> {
+impl<M: OpenAICompatibleModel> OpenAIRequest<M> {
     fn new(
         messages_in: Vec<Message>,
         model_options: &ModelOptions<M>,
@@ -355,12 +351,11 @@ impl<M: OpenAiCompatibleModel> OpenAiRequest<M> {
         stream: bool,
     ) -> Self {
         let mut messages = Vec::new();
-        
-        // Handle system prompt as first message if present
+
         if let Some(system) = &model_options.system {
-            messages.push(OpenAiMessage {
+            messages.push(OpenAIMessage {
                 role: "system".to_string(),
-                content: OpenAiContent::Text(system.clone()),
+                content: OpenAIContent::Text(system.clone()),
                 name: None,
                 tool_call_id: None,
                 tool_calls: Vec::new(),
@@ -380,91 +375,101 @@ impl<M: OpenAiCompatibleModel> OpenAiRequest<M> {
 
             for part in msg.parts() {
                 match part {
-                    Part::Text { content: t, .. } => content_parts.push(OpenAiContentPart::Text { text: t.clone() }),
-                    Part::Media { media_type, data, mime_type, uri, .. } => {
+                    Part::Text { content: t, .. } => {
+                        content_parts.push(OpenAIContentPart::Text { text: t.clone() })
+                    }
+                    Part::Media {
+                        media_type: MediaType::Image,
+                        data,
+                        mime_type,
+                        ..
+                    } => {
                         let anchor_text = part.anchor_media();
-                        content_parts.push(OpenAiContentPart::Text { text: anchor_text });
-
-                        match media_type {
-                            MediaType::Image => {
-                                content_parts.push(OpenAiContentPart::ImageUrl {
-                                    image_url: OpenAiImageUrl {
-                                        url: format!("data:{};base64,{}", mime_type, data),
-                                    },
-                                });
+                        content_parts.push(OpenAIContentPart::Text { text: anchor_text });
+                        content_parts.push(OpenAIContentPart::ImageUrl {
+                            image_url: OpenAIImageUrl {
+                                url: format!("data:{};base64,{}", mime_type, data),
                             },
-                            _ => {
-                                content_parts.push(OpenAiContentPart::File {
-                                    file: OpenAiFileContent {
-                                        file_data: Some(data.clone()),
-                                        file_id: None,
-                                        filename: uri.clone(),
-                                    }
-                                });
-                            }
-                        }
+                        });
                     }
-                    Part::FunctionCall { id, name: fn_name, arguments, .. } => {
-                        if let Some(call_id) = id {
-                            tool_calls.push(OpenAiToolCall {
-                                id: call_id.clone(),
-                                call_type: "function".to_string(),
-                                function: OpenAiFunctionCall {
-                                    name: fn_name.clone(),
-                                    arguments: arguments.to_string(),
-                                },
-                            });
-                        }
+                    Part::Media { data, uri, .. } => {
+                        let anchor_text = part.anchor_media();
+                        content_parts.push(OpenAIContentPart::Text { text: anchor_text });
+                        content_parts.push(OpenAIContentPart::File {
+                            file: OpenAIFileContent {
+                                file_data: Some(data.clone()),
+                                file_id: None,
+                                filename: uri.clone(),
+                            },
+                        });
                     }
-                    Part::FunctionResponse { id, response, parts, .. } => {
-                        if let Some(call_id) = id {
-                            tool_call_id = Some(call_id.clone());
-                            
-                            let mut content_str = String::new();
-                            
-                            if response != &serde_json::json!({}) {
-                                content_str.push_str(&response.to_string());
-                            }
+                    Part::FunctionCall {
+                        id: Some(call_id),
+                        name: fn_name,
+                        arguments,
+                        ..
+                    } => {
+                        tool_calls.push(OpenAIToolCall {
+                            id: call_id.clone(),
+                            call_type: "function".to_string(),
+                            function: OpenAIFunctionCall {
+                                name: fn_name.clone(),
+                                arguments: arguments.to_string(),
+                            },
+                        });
+                    }
+                    Part::FunctionResponse {
+                        id: Some(call_id),
+                        response,
+                        parts,
+                        ..
+                    } => {
+                        tool_call_id = Some(call_id.clone());
 
-                            for part in parts {
-                                match part {
-                                    Part::Media { media_type, mime_type, .. } => {
-                                        let anchor_text = part.anchor_media();
-                                        content_str.push_str(&format!("\n{}", anchor_text));
+                        let mut content_str = String::new();
 
-                                        match media_type {
-                                            MediaType::Image => content_str.push_str("\n[Image Content]"),
-                                            _ => content_str.push_str(&format!("\n[File: {}]", mime_type)),
-                                        }
-                                    }
-                                    _ => {}
+                        if response != &serde_json::json!({}) {
+                            content_str.push_str(&response.to_string());
+                        }
+
+                        for part in parts {
+                            if let Part::Media {
+                                media_type,
+                                mime_type,
+                                ..
+                            } = part
+                            {
+                                let anchor_text = part.anchor_media();
+                                content_str.push_str(&format!("\n{}", anchor_text));
+
+                                match media_type {
+                                    MediaType::Image => content_str.push_str("\n[Image Content]"),
+                                    _ => content_str.push_str(&format!("\n[File: {}]", mime_type)),
                                 }
                             }
-
-                            content_parts.push(OpenAiContentPart::Text { text: content_str });
                         }
+
+                        content_parts.push(OpenAIContentPart::Text { text: content_str });
                     }
                     _ => {}
                 }
             }
 
-            // Override role for tool response
             let final_role = if tool_call_id.is_some() { "tool" } else { role };
 
-            // If content is simple text, use Text variant, else Parts
             let content = if content_parts.len() == 1 {
-                if let OpenAiContentPart::Text { text } = &content_parts[0] {
-                    OpenAiContent::Text(text.clone())
+                if let OpenAIContentPart::Text { text } = &content_parts[0] {
+                    OpenAIContent::Text(text.clone())
                 } else {
-                    OpenAiContent::Parts(content_parts)
+                    OpenAIContent::Parts(content_parts)
                 }
             } else if !content_parts.is_empty() {
-                OpenAiContent::Parts(content_parts)
+                OpenAIContent::Parts(content_parts)
             } else {
-                OpenAiContent::Text(String::new()) // Empty content (e.g. pure tool call)
+                OpenAIContent::Text(String::new())
             };
 
-            messages.push(OpenAiMessage {
+            messages.push(OpenAIMessage {
                 role: final_role.to_string(),
                 content,
                 name,
@@ -475,9 +480,9 @@ impl<M: OpenAiCompatibleModel> OpenAiRequest<M> {
 
         let tools = tool_defs
             .into_iter()
-            .map(|t| OpenAiTool {
+            .map(|t| OpenAITool {
                 tool_type: "function".to_string(),
-                function: OpenAiFunction {
+                function: OpenAIFunction {
                     name: t.name.into_owned(),
                     description: t.description.map(|d| d.into_owned()),
                     parameters: Value::Object((*t.input_schema).clone()),
@@ -485,7 +490,6 @@ impl<M: OpenAiCompatibleModel> OpenAiRequest<M> {
             })
             .collect();
 
-        // Check if model is o1/o3 to use max_completion_tokens
         let is_reasoning_model = model.starts_with("o1") || model.starts_with("o3");
         let (max_tokens, max_completion_tokens) = if is_reasoning_model {
             (None, model_options.max_tokens)
@@ -493,7 +497,7 @@ impl<M: OpenAiCompatibleModel> OpenAiRequest<M> {
             (model_options.max_tokens, None)
         };
 
-        OpenAiRequest {
+        OpenAIRequest {
             model,
             messages,
             max_tokens,
@@ -510,58 +514,64 @@ impl<M: OpenAiCompatibleModel> OpenAiRequest<M> {
 // --- Response Types ---
 
 #[derive(Debug, Deserialize)]
-struct OpenAiResponse {
+#[allow(dead_code)]
+struct OpenAIResponse {
     id: String,
-    choices: Vec<OpenAiChoice>,
-    usage: Option<OpenAiUsage>,
+    choices: Vec<OpenAIChoice>,
+    usage: Option<OpenAIUsage>,
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenAiChoice {
-    message: OpenAiResponseMessage,
+struct OpenAIChoice {
+    message: OpenAIResponseMessage,
     finish_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenAiResponseMessage {
+#[allow(dead_code)]
+struct OpenAIResponseMessage {
     role: String,
     content: Option<String>,
-    tool_calls: Option<Vec<OpenAiToolCall>>,
+    tool_calls: Option<Vec<OpenAIToolCall>>,
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenAiUsage {
+struct OpenAIUsage {
     prompt_tokens: u32,
     completion_tokens: u32,
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenAiErrorResponse {
-    error: OpenAiError,
+struct OpenAIErrorResponse {
+    error: OpenAIError,
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenAiError {
+struct OpenAIError {
     #[serde(rename = "type")]
     error_type: String,
     message: String,
 }
 
-impl From<OpenAiResponse> for Response {
-    fn from(resp: OpenAiResponse) -> Self {
+impl From<OpenAIResponse> for Response {
+    fn from(resp: OpenAIResponse) -> Self {
         let mut parts = Vec::new();
         let mut finish_reason = FinishReason::Stop;
 
         if let Some(choice) = resp.choices.first() {
             if let Some(content) = &choice.message.content {
-                parts.push(Part::Text { content: content.clone(), finished: true });
+                parts.push(Part::Text {
+                    content: content.clone(),
+                    finished: true,
+                });
             }
             if let Some(tool_calls) = &choice.message.tool_calls {
                 for tool_call in tool_calls {
                     parts.push(Part::FunctionCall {
                         id: Some(tool_call.id.clone()),
                         name: tool_call.function.name.clone(),
-                        arguments: serde_json::from_str(&tool_call.function.arguments).unwrap_or(Value::Null),
+                        arguments: serde_json::from_str(&tool_call.function.arguments)
+                            .unwrap_or(Value::Null),
                         signature: None,
                         finished: true,
                     });
@@ -579,10 +589,13 @@ impl From<OpenAiResponse> for Response {
             }
         }
 
-        let usage = resp.usage.map(|u| Usage {
-            prompt_tokens: Some(u.prompt_tokens),
-            completion_tokens: Some(u.completion_tokens),
-        }).unwrap_or_default();
+        let usage = resp
+            .usage
+            .map(|u| Usage {
+                prompt_tokens: Some(u.prompt_tokens),
+                completion_tokens: Some(u.completion_tokens),
+            })
+            .unwrap_or_default();
 
         Response {
             data: vec![Message::Assistant(parts)],
@@ -595,33 +608,34 @@ impl From<OpenAiResponse> for Response {
 // --- Stream Types ---
 
 #[derive(Debug, Deserialize)]
-struct OpenAiStreamChunk {
+#[allow(dead_code)]
+struct OpenAIStreamChunk {
     id: String,
-    choices: Vec<OpenAiStreamChoice>,
-    usage: Option<OpenAiUsage>,
+    choices: Vec<OpenAIStreamChoice>,
+    usage: Option<OpenAIUsage>,
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenAiStreamChoice {
-    delta: Option<OpenAiDelta>,
+struct OpenAIStreamChoice {
+    delta: Option<OpenAIDelta>,
     finish_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenAiDelta {
+struct OpenAIDelta {
     content: Option<String>,
-    tool_calls: Option<Vec<OpenAiStreamToolCall>>,
+    tool_calls: Option<Vec<OpenAIStreamToolCall>>,
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenAiStreamToolCall {
+struct OpenAIStreamToolCall {
     index: u32,
     id: Option<String>,
-    function: Option<OpenAiStreamFunction>,
+    function: Option<OpenAIStreamFunction>,
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenAiStreamFunction {
+struct OpenAIStreamFunction {
     name: Option<String>,
     arguments: Option<String>,
 }

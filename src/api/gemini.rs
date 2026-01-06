@@ -1,20 +1,18 @@
 //! Google Gemini API client implementation.
 
 use async_trait::async_trait;
-use base64::prelude::*;
-use futures::{Stream, StreamExt, stream};
+use futures::{Stream, StreamExt};
 use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use serde_with::skip_serializing_none;
 use std::pin::Pin;
 
 use crate::client::{Client, ClientError, StreamingClient};
 use crate::http::{add_extra_headers, build_http_client, RequestBuilderExt, ResponseExt};
-use crate::model::{FinishReason, Message, Part, Response, Usage, MediaType};
+use crate::model::{FinishReason, MediaType, Message, Part, Response, Usage};
 use crate::options::{ModelOptions, TransportOptions};
 use crate::sse::SSEResponseExt;
-use rmcp::model::CallToolResult;
 
 /// Gemini model options.
 #[skip_serializing_none]
@@ -77,21 +75,23 @@ impl GeminiClient {
         }
     }
 
-
     fn build_request(
         &self,
         messages: Vec<Message>,
         tools: Vec<rmcp::model::Tool>,
         stream: bool,
     ) -> Result<reqwest::RequestBuilder, ClientError> {
-        let model = self
-            .model_options
-            .model
-            .clone()
-            .ok_or_else(|| ClientError::Config("Model must be specified".to_string()))?;
+        let model = self.model_options.model.clone();
 
-        let method = if stream { "streamGenerateContent?alt=sse&" } else { "generateContent?" };
-        let url = format!("{}/models/{}:{}key={}", self.base_url, model, method, self.api_key);
+        let method = if stream {
+            "streamGenerateContent?alt=sse&"
+        } else {
+            "generateContent?"
+        };
+        let url = format!(
+            "{}/models/{}:{}key={}",
+            self.base_url, model, method, self.api_key
+        );
 
         let request_body = GeminiRequest::new(messages, &self.model_options, tools)?;
 
@@ -102,7 +102,7 @@ impl GeminiClient {
 
         let mut req = http_client.post(&url).headers(headers);
         req = add_extra_headers(req, &self.transport_options);
-        
+
         Ok(req.json_logged(&request_body))
     }
 }
@@ -117,7 +117,7 @@ impl Client for GeminiClient {
         tools: Vec<rmcp::model::Tool>,
     ) -> Result<Response, ClientError> {
         let req = self.build_request(messages, tools, false)?;
-        
+
         let response = req.send().await?;
         let status = response.status();
 
@@ -145,10 +145,8 @@ impl StreamingClient for GeminiClient {
         &self,
         messages: Vec<Message>,
         tools: Vec<rmcp::model::Tool>,
-    ) -> Result<
-        Pin<Box<dyn Stream<Item = Result<Response, ClientError>> + Send>>,
-        ClientError,
-    > {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<Response, ClientError>> + Send>>, ClientError>
+    {
         let req = self.build_request(messages, tools, true)?;
         let response = req.send().await?;
         let status = response.status();
@@ -158,7 +156,7 @@ impl StreamingClient for GeminiClient {
             return Err(Self::handle_error_response(status, &body));
         }
 
-        Ok(Box::pin(GeminiStream::new(response)))
+        Ok(Box::pin(GeminiStream::create(response)))
     }
 }
 
@@ -167,9 +165,11 @@ impl StreamingClient for GeminiClient {
 struct GeminiStream;
 
 impl GeminiStream {
-    fn new(response: reqwest::Response) -> impl Stream<Item = Result<Response, ClientError>> + Send {
+    fn create(
+        response: reqwest::Response,
+    ) -> impl Stream<Item = Result<Response, ClientError>> + Send {
         let sse_stream = response.sse();
-        
+
         Box::pin(async_stream::try_stream! {
             let mut stream = Box::pin(sse_stream);
             let mut current_response = Response {
@@ -177,17 +177,17 @@ impl GeminiStream {
                 usage: Usage::default(),
                 finish: FinishReason::Unfinished,
             };
-            
+
             #[derive(PartialEq)]
             enum PartType { Text, Reasoning, FunctionCall }
             let mut last_part_type: Option<PartType> = None;
 
             while let Some(event_result) = stream.next().await {
                 let event_str = event_result?;
-                
+
                 let chunk_result: GeminiResponse = serde_json::from_str(&event_str)
                     .map_err(|e| ClientError::ProviderError(format!("JSON parse error: {}", e)))?;
-                
+
                 if let Some(usage_meta) = chunk_result.usage_metadata {
                     current_response.usage.prompt_tokens = Some(usage_meta.prompt_token_count);
                     current_response.usage.completion_tokens = Some(usage_meta.candidates_token_count.unwrap_or(0) + usage_meta.thoughts_token_count.unwrap_or(0));
@@ -197,33 +197,36 @@ impl GeminiStream {
                     if let Some(candidate) = candidates.first() {
                         if let Some(content) = &candidate.content {
                             let parts = current_response.data[0].parts_mut();
-                            
+
                             for part in &content.parts {
                                 match part {
                                     GeminiPart::Text { text, thought } => {
                                         let is_thought = thought.unwrap_or(false);
                                         let current_type = if is_thought { PartType::Reasoning } else { PartType::Text };
-                                        
-                                        if let Some(last_type) = &last_part_type {
-                                            if *last_type != current_type {
-                                                if let Some(last_part) = parts.last_mut() {
-                                                    match last_part {
-                                                        Part::Text { finished, .. } => *finished = true,
-                                                        Part::Reasoning { finished, .. } => *finished = true,
-                                                        Part::FunctionCall { finished, .. } => *finished = true,
-                                                        _ => {},
+
+                                        if last_part_type
+                                            .as_ref()
+                                            .is_some_and(|last_type| *last_type != current_type)
+                                        {
+                                            if let Some(last_part) = parts.last_mut() {
+                                                match last_part {
+                                                    Part::Text { finished, .. } => *finished = true,
+                                                    Part::Reasoning { finished, .. } => *finished = true,
+                                                    Part::FunctionCall { finished, .. } => {
+                                                        *finished = true
                                                     }
+                                                    _ => {}
                                                 }
                                             }
                                         }
                                         last_part_type = Some(current_type);
 
                                         let should_append = if let Some(last_part) = parts.last_mut() {
-                                            match (last_part, is_thought) {
-                                                (Part::Text { finished: false, .. }, false) => true,
-                                                (Part::Reasoning { finished: false, .. }, true) => true,
-                                                _ => false,
-                                            }
+                                            matches!(
+                                                (last_part, is_thought),
+                                                (Part::Text { finished: false, .. }, false)
+                                                    | (Part::Reasoning { finished: false, .. }, true)
+                                            )
                                         } else {
                                             false
                                         };
@@ -233,39 +236,38 @@ impl GeminiStream {
                                                 match last_part {
                                                     Part::Text { content: t, .. } => t.push_str(text),
                                                     Part::Reasoning { content: c, .. } => c.push_str(text),
-                                                    _ => {},
+                                                    _ => {}
                                                 }
                                             }
+                                        } else if is_thought {
+                                            parts.push(Part::Reasoning {
+                                                content: text.clone(),
+                                                summary: None,
+                                                signature: None,
+                                                finished: false,
+                                            });
                                         } else {
-                                            if is_thought {
-                                                parts.push(Part::Reasoning {
-                                                    content: text.clone(),
-                                                    summary: None,
-                                                    signature: None,
-                                                    finished: false,
-                                                });
-                                            } else {
-                                                parts.push(Part::Text {
-                                                    content: text.clone(),
-                                                    finished: false,
-                                                });
-                                            }
+                                            parts.push(Part::Text {
+                                                content: text.clone(),
+                                                finished: false,
+                                            });
                                         }
                                     },
                                     GeminiPart::FunctionCall { function_call, thought_signature } => {
-                                        if let Some(last_type) = &last_part_type {
-                                            if *last_type != PartType::FunctionCall {
-                                                 if let Some(last_part) = parts.last_mut() {
-                                                    match last_part {
-                                                        Part::Text { finished, .. } => *finished = true,
-                                                        Part::Reasoning { finished, .. } => *finished = true,
-                                                        _ => {},
-                                                    }
+                                        if last_part_type
+                                            .as_ref()
+                                            .is_some_and(|last_type| *last_type != PartType::FunctionCall)
+                                        {
+                                            if let Some(last_part) = parts.last_mut() {
+                                                match last_part {
+                                                    Part::Text { finished, .. } => *finished = true,
+                                                    Part::Reasoning { finished, .. } => *finished = true,
+                                                    _ => {}
                                                 }
                                             }
                                         }
                                         last_part_type = Some(PartType::FunctionCall);
-                                        
+
                                         parts.push(Part::FunctionCall {
                                             id: None,
                                             name: function_call.name.clone(),
@@ -300,7 +302,7 @@ impl GeminiStream {
                         }
                     }
                 }
-                
+
                 yield current_response.clone();
             }
         })
@@ -331,18 +333,22 @@ struct GeminiContent {
 #[serde(rename_all_fields = "camelCase")]
 #[serde(untagged)]
 enum GeminiPart {
-    Text { 
+    Text {
         text: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         thought: Option<bool>,
     },
-    FunctionCall { 
+    FunctionCall {
         function_call: GeminiFunctionCall,
         #[serde(skip_serializing_if = "Option::is_none")]
         thought_signature: Option<String>,
     },
-    FunctionResponse { function_response: GeminiFunctionResponse },
-    InlineData { inline_data: GeminiInlineData },
+    FunctionResponse {
+        function_response: GeminiFunctionResponse,
+    },
+    InlineData {
+        inline_data: GeminiInlineData,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -421,21 +427,32 @@ impl GeminiRequest {
         tool_defs: Vec<rmcp::model::Tool>,
     ) -> Result<Self, ClientError> {
         let mut contents = Vec::new();
-        
+
         for msg in messages_in {
             let role = match msg {
                 Message::User(_) => "user",
                 Message::Assistant(_) => "model",
             };
-            
+
             let mut parts = Vec::new();
             for part in msg.parts() {
                 match part {
-                    Part::Text { content: t, .. } => parts.push(GeminiPart::Text { text: t.clone(), thought: None }),
-                    Part::Reasoning { content, .. } => parts.push(GeminiPart::Text { text: content.clone(), thought: Some(true) }),
-                    Part::Media { data, mime_type, .. } => {
+                    Part::Text { content: t, .. } => parts.push(GeminiPart::Text {
+                        text: t.clone(),
+                        thought: None,
+                    }),
+                    Part::Reasoning { content, .. } => parts.push(GeminiPart::Text {
+                        text: content.clone(),
+                        thought: Some(true),
+                    }),
+                    Part::Media {
+                        data, mime_type, ..
+                    } => {
                         let anchor_text = part.anchor_media();
-                        parts.push(GeminiPart::Text { text: anchor_text, thought: None });
+                        parts.push(GeminiPart::Text {
+                            text: anchor_text,
+                            thought: None,
+                        });
 
                         parts.push(GeminiPart::InlineData {
                             inline_data: GeminiInlineData {
@@ -444,7 +461,12 @@ impl GeminiRequest {
                             },
                         });
                     }
-                    Part::FunctionCall { name, arguments, signature, .. } => {
+                    Part::FunctionCall {
+                        name,
+                        arguments,
+                        signature,
+                        ..
+                    } => {
                         parts.push(GeminiPart::FunctionCall {
                             function_call: GeminiFunctionCall {
                                 name: name.clone(),
@@ -453,24 +475,33 @@ impl GeminiRequest {
                             thought_signature: signature.clone(),
                         });
                     }
-                    Part::FunctionResponse { name, response, parts: inner_parts, .. } => {
+                    Part::FunctionResponse {
+                        name,
+                        response,
+                        parts: inner_parts,
+                        ..
+                    } => {
                         let mut parts_vec = Vec::new();
-                        
+
                         for part in inner_parts {
-                            match part {
-                                Part::Media { data, mime_type, .. } => {
-                                    parts_vec.push(GeminiFunctionResponsePart {
-                                        inline_data: GeminiFunctionResponseBlob {
-                                            mime_type: mime_type.clone(),
-                                            data: data.clone(),
-                                        }
-                                    });
-                                }
-                                _ => {}
+                            if let Part::Media {
+                                data, mime_type, ..
+                            } = part
+                            {
+                                parts_vec.push(GeminiFunctionResponsePart {
+                                    inline_data: GeminiFunctionResponseBlob {
+                                        mime_type: mime_type.clone(),
+                                        data: data.clone(),
+                                    },
+                                });
                             }
                         }
 
-                        let function_response_parts = if parts_vec.is_empty() { None } else { Some(parts_vec) };
+                        let function_response_parts = if parts_vec.is_empty() {
+                            None
+                        } else {
+                            Some(parts_vec)
+                        };
 
                         parts.push(GeminiPart::FunctionResponse {
                             function_response: GeminiFunctionResponse {
@@ -482,7 +513,7 @@ impl GeminiRequest {
                     }
                 }
             }
-            
+
             if !parts.is_empty() {
                 contents.push(GeminiContent {
                     role: role.to_string(),
@@ -493,11 +524,14 @@ impl GeminiRequest {
 
         let tools = if !tool_defs.is_empty() {
             vec![GeminiTool {
-                function_declarations: tool_defs.into_iter().map(|t| GeminiFunctionDeclaration {
-                    name: t.name.into_owned(),
-                    description: t.description.map(|d| d.into_owned()).unwrap_or_default(),
-                    parameters_json_schema: Some(Value::Object((*t.input_schema).clone())),
-                }).collect(),
+                function_declarations: tool_defs
+                    .into_iter()
+                    .map(|t| GeminiFunctionDeclaration {
+                        name: t.name.into_owned(),
+                        description: t.description.map(|d| d.into_owned()).unwrap_or_default(),
+                        parameters_json_schema: Some(Value::Object((*t.input_schema).clone())),
+                    })
+                    .collect(),
             }]
         } else {
             Vec::new()
@@ -505,7 +539,10 @@ impl GeminiRequest {
 
         let system_instruction = model_options.system.as_ref().map(|s| GeminiContent {
             role: "user".to_string(),
-            parts: vec![GeminiPart::Text { text: s.clone(), thought: None }],
+            parts: vec![GeminiPart::Text {
+                text: s.clone(),
+                thought: None,
+            }],
         });
 
         Ok(GeminiRequest {
@@ -519,7 +556,9 @@ impl GeminiRequest {
                 max_output_tokens: model_options.max_tokens,
                 stop_sequences: model_options.provider.stop_sequences.clone(),
                 response_mime_type: model_options.provider.response_mime_type.clone(),
-                thinking_config: if model_options.reasoning.unwrap_or(false) || model_options.provider.include_thoughts.unwrap_or(false) {
+                thinking_config: if model_options.reasoning.unwrap_or(false)
+                    || model_options.provider.include_thoughts.unwrap_or(false)
+                {
                     Some(GeminiThinkingConfig {
                         include_thoughts: Some(true),
                         thinking_budget: model_options.provider.thinking_budget,
@@ -545,6 +584,7 @@ struct GeminiResponse {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 struct GeminiCandidate {
     content: Option<GeminiContent>,
     finish_reason: Option<String>,
@@ -553,6 +593,7 @@ struct GeminiCandidate {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 struct GeminiUsageMetadata {
     prompt_token_count: u32,
     candidates_token_count: Option<u32>,
@@ -566,6 +607,7 @@ struct GeminiErrorResponse {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct GeminiError {
     code: u32,
     message: String,
@@ -592,10 +634,16 @@ impl From<GeminiResponse> for Response {
                                         finished: true,
                                     });
                                 } else {
-                                    parts.push(Part::Text { content: text, finished: true });
+                                    parts.push(Part::Text {
+                                        content: text,
+                                        finished: true,
+                                    });
                                 }
                             }
-                            GeminiPart::FunctionCall { function_call, thought_signature } => {
+                            GeminiPart::FunctionCall {
+                                function_call,
+                                thought_signature,
+                            } => {
                                 parts.push(Part::FunctionCall {
                                     id: None,
                                     name: function_call.name,
@@ -609,7 +657,7 @@ impl From<GeminiResponse> for Response {
                                 if let Some(gemini_parts) = function_response.parts {
                                     for p in gemini_parts {
                                         inner_parts.push(Part::Media {
-                                            media_type: MediaType::Binary, // Default to binary for response parts
+                                            media_type: MediaType::Binary,
                                             data: p.inline_data.data,
                                             mime_type: p.inline_data.mime_type,
                                             uri: None,
@@ -630,7 +678,7 @@ impl From<GeminiResponse> for Response {
                         }
                     }
                 }
-                
+
                 if let Some(reason) = candidate.finish_reason {
                     finish_reason = match reason.as_str() {
                         "STOP" => FinishReason::Stop,
@@ -643,10 +691,15 @@ impl From<GeminiResponse> for Response {
             }
         }
 
-        let usage = resp.usage_metadata.map(|u| Usage {
-            prompt_tokens: Some(u.prompt_token_count),
-            completion_tokens: Some(u.candidates_token_count.unwrap_or(0) + u.thoughts_token_count.unwrap_or(0)),
-        }).unwrap_or_default();
+        let usage = resp
+            .usage_metadata
+            .map(|u| Usage {
+                prompt_tokens: Some(u.prompt_token_count),
+                completion_tokens: Some(
+                    u.candidates_token_count.unwrap_or(0) + u.thoughts_token_count.unwrap_or(0),
+                ),
+            })
+            .unwrap_or_default();
 
         Response {
             data: vec![Message::Assistant(parts)],

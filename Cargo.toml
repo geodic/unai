@@ -1,10 +1,11 @@
-[workspace]
-members = ["unai_macros"]
-
 [package]
 name = "unai"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+readme = "README.md"
+description = "A pragmatic, provider-agnostic Rust LLM client."
+repository = "https://github.com/geodic/unai"
 
 [dependencies]
 tokio = { version = "1.41", features = ["full"] }
@@ -18,10 +19,9 @@ bytes = "1.9"
 itertools = "0.14.0"
 nonempty = { version = "0.12.0", features = ["serialize"] }
 schemars = { version = "0.8", features = ["derive"] }
-unai_macros = { path = "./unai_macros" }
 tracing = "0.1"
 serde_with = "3.16.1"
-rmcp = { version = "0.10.0", features = ["client", "server", "macros"] }
+rmcp = { version = "0.10.0", features = ["client", "server", "macros", "transport-streamable-http-client-reqwest"] }
 async-stream = "0.3.6"
 uuid = { version = "1.19.0", features = ["v4"] }
 base64 = "0.22"

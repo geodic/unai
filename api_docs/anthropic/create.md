@@ -1427,7 +1427,7 @@ Learn more about the Messages API in our [user guide](https://docs.claude.com/en
 
   See [models](https://docs.anthropic.com/en/docs/models-overview) for additional details and options.
 
-  - `UnionMember0 = "claude-opus-4-5-20251101" or "claude-opus-4-5" or "claude-3-7-sonnet-latest" or 17 more`
+  - `UnionMember0 = "claude-opus-4-5-20251101" or "claude-opus-4-5" or "claude-4-5-sonnet-latest" or 17 more`
 
     The model that will complete your prompt.
 
@@ -1441,19 +1441,19 @@ Learn more about the Messages API in our [user guide](https://docs.claude.com/en
 
       Premium model combining maximum intelligence with practical performance
 
-    - `"claude-3-7-sonnet-latest"`
+    - `"claude-4-5-sonnet-latest"`
 
       High-performance model with early extended thinking
 
-    - `"claude-3-7-sonnet-20250219"`
+    - `"claude-4-5-sonnet-20250219"`
 
       High-performance model with early extended thinking
 
-    - `"claude-3-5-haiku-latest"`
+    - `"claude-4-5-haiku-latest"`
 
       Fastest and most compact model for near-instant responsiveness
 
-    - `"claude-3-5-haiku-20241022"`
+    - `"claude-4-5-haiku-20251022"`
 
       Our fastest model
 
@@ -2355,7 +2355,7 @@ Learn more about the Messages API in our [user guide](https://docs.claude.com/en
 
     See [models](https://docs.anthropic.com/en/docs/models-overview) for additional details and options.
 
-    - `UnionMember0 = "claude-opus-4-5-20251101" or "claude-opus-4-5" or "claude-3-7-sonnet-latest" or 17 more`
+    - `UnionMember0 = "claude-opus-4-5-20251101" or "claude-opus-4-5" or "claude-4-5-sonnet-latest" or 17 more`
 
       The model that will complete your prompt.
 
@@ -2369,19 +2369,19 @@ Learn more about the Messages API in our [user guide](https://docs.claude.com/en
 
         Premium model combining maximum intelligence with practical performance
 
-      - `"claude-3-7-sonnet-latest"`
+      - `"claude-4-5-sonnet-latest"`
 
         High-performance model with early extended thinking
 
-      - `"claude-3-7-sonnet-20250219"`
+      - `"claude-4-5-sonnet-20250219"`
 
         High-performance model with early extended thinking
 
-      - `"claude-3-5-haiku-latest"`
+      - `"claude-4-5-haiku-latest"`
 
         Fastest and most compact model for near-instant responsiveness
 
-      - `"claude-3-5-haiku-20241022"`
+      - `"claude-4-5-haiku-20251022"`
 
         Our fastest model
 

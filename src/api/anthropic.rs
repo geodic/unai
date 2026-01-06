@@ -2,17 +2,17 @@
 
 use async_trait::async_trait;
 use base64::prelude::*;
-use futures::{Stream, StreamExt, stream};
+use futures::{Stream, StreamExt};
 use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use serde_with::skip_serializing_none;
 use std::collections::HashMap;
 use std::pin::Pin;
 
 use crate::client::{Client, ClientError, StreamingClient};
 use crate::http::{add_extra_headers, build_http_client, RequestBuilderExt, ResponseExt};
-use crate::model::{FinishReason, Message, Part, Response, Usage, MediaType};
+use crate::model::{FinishReason, MediaType, Message, Part, Response, Usage};
 use crate::options::{ModelOptions, TransportOptions};
 use crate::sse::SSEResponseExt;
 
@@ -45,9 +45,16 @@ pub enum ServiceTier {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AnthropicToolChoice {
-    Auto { disable_parallel_tool_use: Option<bool> },
-    Any { disable_parallel_tool_use: Option<bool> },
-    Tool { name: String, disable_parallel_tool_use: Option<bool> },
+    Auto {
+        disable_parallel_tool_use: Option<bool>,
+    },
+    Any {
+        disable_parallel_tool_use: Option<bool>,
+    },
+    Tool {
+        name: String,
+        disable_parallel_tool_use: Option<bool>,
+    },
     None,
 }
 
@@ -94,13 +101,10 @@ impl AnthropicClient {
     ) -> Result<reqwest::RequestBuilder, ClientError> {
         let url = format!("{}/messages", self.base_url);
 
-        let model = self
-            .model_options
-            .model
-            .clone()
-            .ok_or_else(|| ClientError::Config("Model must be specified".to_string()))?;
+        let model = self.model_options.model.clone();
 
-        let request_body = AnthropicRequest::new(messages, &self.model_options, model, tools, stream);
+        let request_body =
+            AnthropicRequest::new(messages, &self.model_options, model, tools, stream);
 
         let http_client = build_http_client(&self.transport_options)?;
 
@@ -118,7 +122,7 @@ impl AnthropicClient {
 
         let mut req = http_client.post(&url).headers(headers);
         req = add_extra_headers(req, &self.transport_options);
-        
+
         Ok(req.json_logged(&request_body))
     }
 }
@@ -133,7 +137,7 @@ impl Client for AnthropicClient {
         tools: Vec<rmcp::model::Tool>,
     ) -> Result<Response, ClientError> {
         let req = self.build_request(messages, tools, false)?;
-        
+
         let response = req.send().await?;
         let status = response.status();
 
@@ -161,10 +165,8 @@ impl StreamingClient for AnthropicClient {
         &self,
         messages: Vec<Message>,
         tools: Vec<rmcp::model::Tool>,
-    ) -> Result<
-        Pin<Box<dyn Stream<Item = Result<Response, ClientError>> + Send>>,
-        ClientError,
-    > {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<Response, ClientError>> + Send>>, ClientError>
+    {
         let req = self.build_request(messages, tools, true)?;
         let response = req.send().await?;
         let status = response.status();
@@ -174,7 +176,7 @@ impl StreamingClient for AnthropicClient {
             return Err(Self::handle_error_response(status, &body));
         }
 
-        Ok(Box::pin(AnthropicStream::new(response)))
+        Ok(Box::pin(AnthropicStream::create_stream(response)))
     }
 }
 
@@ -183,9 +185,11 @@ impl StreamingClient for AnthropicClient {
 struct AnthropicStream;
 
 impl AnthropicStream {
-    fn new(response: reqwest::Response) -> impl Stream<Item = Result<Response, ClientError>> + Send {
+    fn create_stream(
+        response: reqwest::Response,
+    ) -> impl Stream<Item = Result<Response, ClientError>> + Send {
         let sse_stream = response.sse();
-        
+
         Box::pin(async_stream::try_stream! {
             let mut stream = Box::pin(sse_stream);
             let mut current_response = Response {
@@ -193,13 +197,12 @@ impl AnthropicStream {
                 usage: Usage::default(),
                 finish: FinishReason::Unfinished,
             };
-            
+
             let mut tool_buffers: HashMap<u32, (String, String, String)> = HashMap::new();
 
             while let Some(event_result) = stream.next().await {
                 let event_str = event_result?;
 
-                // Parse JSON event
                 let chunk_result: AnthropicStreamEvent = serde_json::from_str(&event_str)
                     .map_err(|e| ClientError::ProviderError(format!("JSON parse error: {}", e)))?;
 
@@ -211,7 +214,7 @@ impl AnthropicStream {
                     },
                     AnthropicStreamEvent::ContentBlockStart { index, content_block } => {
                         let parts = current_response.data[0].parts_mut();
-                        
+
                         match content_block {
                             AnthropicContentBlock::Text { text, .. } => {
                                 parts.push(Part::Text { content: text, finished: false });
@@ -242,22 +245,22 @@ impl AnthropicStream {
                         let parts = current_response.data[0].parts_mut();
                         if let Some(part) = parts.get_mut(index as usize) {
                             match delta {
-                                AnthropicDelta::TextDelta { text } => {
+                                AnthropicDelta::Text { text } => {
                                     if let Part::Text { content: current_text, .. } = part {
                                         current_text.push_str(&text);
                                     }
                                 },
-                                AnthropicDelta::InputJsonDelta { partial_json } => {
+                                AnthropicDelta::InputJson { partial_json } => {
                                     if let Some(buffer) = tool_buffers.get_mut(&index) {
                                         buffer.2.push_str(&partial_json);
                                     }
                                 },
-                                AnthropicDelta::ThinkingDelta { thinking } => {
+                                AnthropicDelta::Thinking { thinking } => {
                                     if let Part::Reasoning { content, .. } = part {
                                         content.push_str(&thinking);
                                     }
                                 },
-                                AnthropicDelta::SignatureDelta { signature } => {
+                                AnthropicDelta::Signature { signature } => {
                                      if let Part::Reasoning { signature: sig, .. } = part {
                                         *sig = Some(signature);
                                     }
@@ -338,6 +341,7 @@ struct AnthropicRequest {
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[allow(dead_code)]
 enum AnthropicThinkingConfig {
     Enabled { budget_tokens: u32 },
     Disabled,
@@ -361,7 +365,7 @@ struct AnthropicMessage {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum AnthropicSystemBlock {
-    Text { 
+    Text {
         text: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         cache_control: Option<AnthropicCacheControl>,
@@ -391,7 +395,7 @@ enum AnthropicToolResultContent {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum AnthropicContentBlock {
-    Text { 
+    Text {
         text: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         cache_control: Option<AnthropicCacheControl>,
@@ -427,7 +431,7 @@ enum AnthropicContentBlock {
     },
     RedactedThinking {
         data: String,
-    }
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -455,7 +459,7 @@ impl AnthropicRequest {
         stream: bool,
     ) -> Self {
         let mut messages = Vec::new();
-        
+
         for msg in messages_in {
             let role = match msg {
                 Message::User(_) => "user",
@@ -465,11 +469,18 @@ impl AnthropicRequest {
             let mut content_blocks = Vec::new();
             for part in msg.parts() {
                 match part {
-                    Part::Text { content: t, .. } => content_blocks.push(AnthropicContentBlock::Text { 
-                        text: t.clone(),
-                        cache_control: None,
-                    }),
-                    Part::Media { media_type, data, mime_type, .. } => {
+                    Part::Text { content: t, .. } => {
+                        content_blocks.push(AnthropicContentBlock::Text {
+                            text: t.clone(),
+                            cache_control: None,
+                        })
+                    }
+                    Part::Media {
+                        media_type,
+                        data,
+                        mime_type,
+                        ..
+                    } => {
                         content_blocks.push(AnthropicContentBlock::Text {
                             text: part.anchor_media(),
                             cache_control: None,
@@ -485,7 +496,7 @@ impl AnthropicRequest {
                                     },
                                     cache_control: None,
                                 });
-                            },
+                            }
                             MediaType::Document => {
                                 content_blocks.push(AnthropicContentBlock::Document {
                                     source: AnthropicDocumentSource {
@@ -495,7 +506,7 @@ impl AnthropicRequest {
                                     },
                                     cache_control: None,
                                 });
-                            },
+                            }
                             MediaType::Text | MediaType::Binary => {
                                 let content = match BASE64_STANDARD.decode(data) {
                                     Ok(bytes) => String::from_utf8(bytes).unwrap_or(data.clone()),
@@ -508,7 +519,12 @@ impl AnthropicRequest {
                             }
                         }
                     }
-                    Part::FunctionCall { id, name, arguments, .. } => {
+                    Part::FunctionCall {
+                        id,
+                        name,
+                        arguments,
+                        ..
+                    } => {
                         if let Some(call_id) = id {
                             content_blocks.push(AnthropicContentBlock::ToolUse {
                                 id: call_id.clone(),
@@ -518,10 +534,15 @@ impl AnthropicRequest {
                             });
                         }
                     }
-                    Part::FunctionResponse { id, response, parts, .. } => {
+                    Part::FunctionResponse {
+                        id,
+                        response,
+                        parts,
+                        ..
+                    } => {
                         if let Some(call_id) = id {
                             let mut blocks = Vec::new();
-                            
+
                             if response.clone() != json!({}) {
                                 blocks.push(AnthropicToolResultBlock::Text {
                                     text: serde_json::to_string(&response).unwrap_or_default(),
@@ -529,34 +550,39 @@ impl AnthropicRequest {
                             }
 
                             for part in parts {
-                                match part {
-                                    Part::Media { media_type, data, mime_type, .. } => {
-                                        blocks.push(AnthropicToolResultBlock::Text {
-                                            text: part.anchor_media(),
-                                        });
+                                if let Part::Media {
+                                    media_type,
+                                    data,
+                                    mime_type,
+                                    ..
+                                } = part
+                                {
+                                    blocks.push(AnthropicToolResultBlock::Text {
+                                        text: part.anchor_media(),
+                                    });
 
-                                        match media_type {
-                                            MediaType::Image => {
-                                                blocks.push(AnthropicToolResultBlock::Image {
-                                                    source: AnthropicImageSource {
-                                                        source_type: "base64".to_string(),
-                                                        media_type: mime_type.clone(),
-                                                        data: data.clone(),
-                                                    },
-                                                });
-                                            },
-                                            _ => {
-                                                let content = match BASE64_STANDARD.decode(data) {
-                                                    Ok(bytes) => String::from_utf8(bytes).unwrap_or(data.clone()),
-                                                    Err(_) => data.clone(),
-                                                };
-                                                blocks.push(AnthropicToolResultBlock::Text {
-                                                    text: content,
-                                                });
-                                            }
+                                    match media_type {
+                                        MediaType::Image => {
+                                            blocks.push(AnthropicToolResultBlock::Image {
+                                                source: AnthropicImageSource {
+                                                    source_type: "base64".to_string(),
+                                                    media_type: mime_type.clone(),
+                                                    data: data.clone(),
+                                                },
+                                            });
+                                        }
+                                        _ => {
+                                            let content = match BASE64_STANDARD.decode(data) {
+                                                Ok(bytes) => {
+                                                    String::from_utf8(bytes).unwrap_or(data.clone())
+                                                }
+                                                Err(_) => data.clone(),
+                                            };
+                                            blocks.push(AnthropicToolResultBlock::Text {
+                                                text: content,
+                                            });
                                         }
                                     }
-                                    _ => {}
                                 }
                             }
 
@@ -568,7 +594,9 @@ impl AnthropicRequest {
                             });
                         }
                     }
-                    Part::Reasoning { content, signature, .. } => {
+                    Part::Reasoning {
+                        content, signature, ..
+                    } => {
                         content_blocks.push(AnthropicContentBlock::Thinking {
                             thinking: content.clone(),
                             signature: signature.clone().unwrap_or_default(),
@@ -576,7 +604,7 @@ impl AnthropicRequest {
                     }
                 }
             }
-            
+
             if !content_blocks.is_empty() {
                 messages.push(AnthropicMessage {
                     role: role.to_string(),
@@ -597,18 +625,24 @@ impl AnthropicRequest {
 
         let thinking = if model_options.reasoning.unwrap_or(false) {
             if let Some(budget) = model_options.provider.thinking_budget {
-                Some(AnthropicThinkingConfig::Enabled { budget_tokens: budget })
+                Some(AnthropicThinkingConfig::Enabled {
+                    budget_tokens: budget,
+                })
             } else {
-                Some(AnthropicThinkingConfig::Enabled { budget_tokens: 1024 })
+                Some(AnthropicThinkingConfig::Enabled {
+                    budget_tokens: 1024,
+                })
             }
         } else {
             None
         };
 
-        let system = model_options.system.as_ref().map(|s| vec![AnthropicSystemBlock::Text {
-            text: s.clone(),
-            cache_control: None,
-        }]);
+        let system = model_options.system.as_ref().map(|s| {
+            vec![AnthropicSystemBlock::Text {
+                text: s.clone(),
+                cache_control: None,
+            }]
+        });
 
         AnthropicRequest {
             model,
@@ -632,6 +666,7 @@ impl AnthropicRequest {
 // --- Response Types ---
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct AnthropicResponse {
     id: String,
     #[serde(rename = "type")]
@@ -645,6 +680,7 @@ struct AnthropicResponse {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct AnthropicUsage {
     input_tokens: u32,
     output_tokens: u32,
@@ -669,13 +705,18 @@ struct AnthropicError {
 impl From<AnthropicResponse> for Response {
     fn from(resp: AnthropicResponse) -> Self {
         let mut parts = Vec::new();
-        
+
         for content in resp.content {
             match content {
                 AnthropicContentBlock::Text { text, .. } => {
-                    parts.push(Part::Text { content: text, finished: true });
+                    parts.push(Part::Text {
+                        content: text,
+                        finished: true,
+                    });
                 }
-                AnthropicContentBlock::ToolUse { id, name, input, .. } => {
+                AnthropicContentBlock::ToolUse {
+                    id, name, input, ..
+                } => {
                     parts.push(Part::FunctionCall {
                         id: Some(id),
                         name,
@@ -684,7 +725,10 @@ impl From<AnthropicResponse> for Response {
                         finished: true,
                     });
                 }
-                AnthropicContentBlock::Thinking { thinking, signature } => {
+                AnthropicContentBlock::Thinking {
+                    thinking,
+                    signature,
+                } => {
                     parts.push(Part::Reasoning {
                         content: thinking,
                         summary: None,
@@ -692,9 +736,7 @@ impl From<AnthropicResponse> for Response {
                         finished: true,
                     });
                 }
-                AnthropicContentBlock::RedactedThinking { .. } => {
-                    // Skip redacted thinking
-                }
+                AnthropicContentBlock::RedactedThinking { .. } => {}
                 _ => {}
             }
         }
@@ -723,26 +765,46 @@ impl From<AnthropicResponse> for Response {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum AnthropicStreamEvent {
-    MessageStart { message: AnthropicResponse },
-    ContentBlockStart { index: u32, content_block: AnthropicContentBlock },
-    ContentBlockDelta { index: u32, delta: AnthropicDelta },
-    ContentBlockStop { index: u32 },
-    MessageDelta { delta: AnthropicMessageDelta, usage: Option<AnthropicUsage> },
+    MessageStart {
+        message: AnthropicResponse,
+    },
+    ContentBlockStart {
+        index: u32,
+        content_block: AnthropicContentBlock,
+    },
+    ContentBlockDelta {
+        index: u32,
+        delta: AnthropicDelta,
+    },
+    ContentBlockStop {
+        index: u32,
+    },
+    MessageDelta {
+        delta: AnthropicMessageDelta,
+        usage: Option<AnthropicUsage>,
+    },
     MessageStop,
     Ping,
-    Error { error: AnthropicError },
+    Error {
+        error: AnthropicError,
+    },
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type")]
 enum AnthropicDelta {
-    TextDelta { text: String },
-    InputJsonDelta { partial_json: String },
-    ThinkingDelta { thinking: String },
-    SignatureDelta { signature: String },
+    #[serde(rename = "text_delta")]
+    Text { text: String },
+    #[serde(rename = "input_json_delta")]
+    InputJson { partial_json: String },
+    #[serde(rename = "thinking_delta")]
+    Thinking { thinking: String },
+    #[serde(rename = "signature_delta")]
+    Signature { signature: String },
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct AnthropicMessageDelta {
     stop_reason: Option<String>,
     stop_sequence: Option<String>,

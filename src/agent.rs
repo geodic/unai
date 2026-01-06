@@ -2,17 +2,16 @@
 
 use crate::client::{Client, ClientError};
 use crate::model::{FinishReason, Message, Part, Response, Usage};
-use rmcp::model::{Resource, ResourceContents, CallToolResult, Content, RawTextContent};
 use serde_json::json;
+use std::collections::HashMap;
 use tracing::{debug, info, warn};
 
-use crate::mcp::{MCPServer, Served, MCPError};
-
+use crate::mcp::MCPServer;
 
 /// Agent that automatically executes tools in a loop.
 ///
 /// Unlike the raw `Client`, an `Agent` handles tool execution automatically:
-/// 1. Sends request with tool definitions from Context
+/// 1. Sends request with tool definitions from the MCP server (if configured)
 /// 2. Receives response with potential function calls
 /// 3. Executes tools automatically
 /// 4. Adds results back to conversation
@@ -20,13 +19,21 @@ use crate::mcp::{MCPServer, Served, MCPError};
 ///
 /// # Example
 /// ```ignore
-/// let client = GeminiProvider::create(api_key);
+/// use unai::agent::Agent;
+/// use unai::providers::{Gemini, Provider};
+/// use unai::model::{Message, Part};
+///
+/// let client = Gemini::create("api_key".to_string(), "gemini-3.0-pro".to_string());
 /// let agent = Agent::new(client)
-///     .with_mcp_server(weather_server);
+///     .with_server(weather_server);
 ///
-/// let messages = vec![Message::Text { role: Role::User, content: "Hello".into() }];
+/// let messages = vec![
+///     Message::User(vec![
+///         Part::Text { content: "What's the weather?".into(), finished: true }
+///     ])
+/// ];
 ///
-/// let response = agent.chat(messages, vec![]).await?;
+/// let response = agent.chat(messages).await?;
 /// ```
 pub struct Agent<C: Client> {
     client: C,
@@ -40,7 +47,7 @@ impl<C: Client> Agent<C> {
     /// # Arguments
     /// - `client`: The initialized client instance
     ///
-    /// Tools are passed via Context in chat/chat_stream methods.
+    /// Tools are fetched from the configured MCP server if available.
     pub fn new(client: C) -> Self {
         Self {
             client,
@@ -61,12 +68,10 @@ impl<C: Client> Agent<C> {
         self
     }
 
-
-
     /// Send a chat request with automatic tool execution.
     ///
     /// This method automatically handles the tool execution loop:
-    /// - Sends request to LLM with tools from Context
+    /// - Sends request to LLM with tools from the MCP server (if configured)
     /// - Executes any tool calls
     /// - Continues until no more tool calls or max iterations reached
     ///
@@ -75,10 +80,7 @@ impl<C: Client> Agent<C> {
     ///
     /// # Returns
     /// The response containing all new messages generated during the execution (including tool calls and results)
-    pub async fn chat(
-        &self,
-        mut messages: Vec<Message>,
-    ) -> Result<Response, ClientError> {
+    pub async fn chat(&self, mut messages: Vec<Message>) -> Result<Response, ClientError> {
         debug!(
             "Starting agent chat loop with {} initial messages",
             messages.len()
@@ -90,9 +92,15 @@ impl<C: Client> Agent<C> {
             finish: FinishReason::Unfinished,
         };
 
-        let tools = if let Some(server) = &self.server {
+        let (tools, tool_map) = if let Some(server) = &self.server {
             match server.list_tools().await {
-                Ok(tools) => tools.into_iter().map(|t| t.value).collect(),
+                Ok(tools) => {
+                    let map: HashMap<String, Option<String>> = tools
+                        .iter()
+                        .map(|t| (t.value.name.to_string(), t.server_id.clone()))
+                        .collect();
+                    (tools.into_iter().map(|t| t.value).collect(), map)
+                }
                 Err(e) => {
                     return Err(ClientError::ProviderError(format!(
                         "Failed to list tools from MCP server: {}",
@@ -101,20 +109,18 @@ impl<C: Client> Agent<C> {
                 }
             }
         } else {
-            Vec::new()
+            (Vec::new(), HashMap::new())
         };
 
         for iteration in 0..self.max_iterations {
             debug!("Agent iteration {}/{}", iteration + 1, self.max_iterations);
 
-            // Send request
             let response = self.client.request(messages.clone(), tools.clone()).await?;
             current_response.usage += response.usage;
             current_response.finish = response.finish.clone();
 
             let mut tool_calls_executed = false;
 
-            // Process response messages and execute tools if any
             for msg in response.data {
                 messages.push(msg.clone());
                 current_response.data.push(msg.clone());
@@ -131,19 +137,22 @@ impl<C: Client> Agent<C> {
                         info!("Tool call requested: {}", name);
                         debug!("Tool arguments: {}", arguments);
 
-                        // Execute tool
                         let server = self.server.as_ref().ok_or_else(|| {
                             ClientError::Config("No MCP server configured".to_string())
                         })?;
+                        let server_id = tool_map.get(name).cloned().flatten();
                         let result = server
-                            .call_tool(name.clone(), arguments.clone())
+                            .call_tool(name.clone(), arguments.clone(), server_id)
                             .await;
 
                         let response_part = match result {
                             Ok(mut part) => {
                                 info!("Tool {} executed successfully", name);
                                 debug!("Tool result: {:?}", part);
-                                if let Part::FunctionResponse { id: ref mut pid, .. } = part {
+                                if let Part::FunctionResponse {
+                                    id: ref mut pid, ..
+                                } = part
+                                {
                                     *pid = id.clone();
                                 }
                                 part
@@ -167,14 +176,12 @@ impl<C: Client> Agent<C> {
                 }
             }
 
-            // If no function calls, we're done
             if !tool_calls_executed {
                 debug!("No more function calls, agent loop complete");
                 return Ok(current_response);
             }
         }
 
-        // Max iterations reached
         warn!(
             "Max iterations ({}) reached in agent loop",
             self.max_iterations
@@ -187,7 +194,7 @@ impl<C: Client> Agent<C> {
     /// Send a streaming chat request with automatic tool execution.
     ///
     /// This method automatically handles the tool execution loop with streaming:
-    /// - Sends streaming request to LLM with tools from Context
+    /// - Sends streaming request to LLM with tools from the MCP server (if configured)
     /// - Executes any tool calls
     /// - Continues until no more tool calls or max iterations reached
     ///
@@ -199,11 +206,7 @@ impl<C: Client> Agent<C> {
     pub fn chat_stream<'a>(
         &'a self,
         mut messages: Vec<Message>,
-    ) -> std::pin::Pin<
-        Box<
-            dyn futures::Stream<Item = Result<Response, ClientError>> + Send + 'a,
-        >,
-    >
+    ) -> std::pin::Pin<Box<dyn futures::Stream<Item = Result<Response, ClientError>> + Send + 'a>>
     where
         C: crate::client::StreamingClient,
     {
@@ -217,16 +220,22 @@ impl<C: Client> Agent<C> {
                 finish: FinishReason::Unfinished,
             };
 
-            let tools = if let Some(server) = &self.server {
+            let (tools, tool_map) = if let Some(server) = &self.server {
                 match server.list_tools().await {
-                    Ok(tools) => tools.into_iter().map(|t| t.value).collect(),
+                    Ok(tools) => {
+                        let map: HashMap<String, Option<String>> = tools
+                            .iter()
+                            .map(|t| (t.value.name.to_string(), t.server_id.clone()))
+                            .collect();
+                        (tools.into_iter().map(|t| t.value).collect(), map)
+                    }
                     Err(e) => {
                         warn!("Failed to list tools from MCP server: {}", e);
-                        Vec::new()
+                        (Vec::new(), HashMap::new())
                     }
                 }
             } else {
-                Vec::new()
+                (Vec::new(), HashMap::new())
             };
 
             for iteration in 0..self.max_iterations {
@@ -237,19 +246,19 @@ impl<C: Client> Agent<C> {
                 );
 
                 let mut stream = self.client.request_stream(messages.clone(), tools.clone()).await?;
-                
+
                 // Snapshot of state before this turn
                 let base_data_len = current_response.data.len();
                 let base_usage = current_response.usage.clone();
 
                 while let Some(response_result) = stream.next().await {
                     let response = response_result?;
-                    
+
                     // Update current_response
                     // Truncate to base length to remove previous partials of this turn
                     current_response.data.truncate(base_data_len);
                     current_response.data.extend(response.data.clone());
-                    
+
                     current_response.usage = base_usage.clone();
                     current_response.usage += response.usage;
                     current_response.finish = response.finish;
@@ -277,10 +286,13 @@ impl<C: Client> Agent<C> {
                             if *finished {
                                 tool_calls_executed = true;
                                 info!("Executing tool: {}", name);
-                                
+
                                 let server = self.server.as_ref().ok_or_else(|| ClientError::Config("No MCP server configured".to_string()))?;
-                                let result = server.call_tool(name.clone(), arguments.clone()).await;
-                                
+                                let server_id = tool_map.get(name).cloned().flatten();
+                                let result = server
+                                    .call_tool(name.clone(), arguments.clone(), server_id)
+                                    .await;
+
                                 let response_part = match result {
                                     Ok(mut part) => {
                                         if let Part::FunctionResponse { id: ref mut pid, .. } = part {
@@ -308,7 +320,7 @@ impl<C: Client> Agent<C> {
                     let tool_msg = Message::User(tool_responses);
                     messages.push(tool_msg.clone());
                     current_response.data.push(tool_msg);
-                    
+
                     yield current_response.clone();
                 } else {
                     // No tool calls, we are done

@@ -50,7 +50,6 @@ pub trait RequestBuilderExt {
 
 impl RequestBuilderExt for RequestBuilder {
     fn json_logged<T: serde::Serialize + ?Sized>(self, json: &T) -> Self {
-        // Log request body
         if let Ok(req_body) = serde_json::to_string_pretty(json) {
             tracing::debug!("API request body ({} bytes):\n{}", req_body.len(), req_body);
         }

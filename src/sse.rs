@@ -22,22 +22,16 @@ use crate::client::ClientError;
 ///
 /// # Example
 /// ```ignore
-/// use unai::sse::SseResponseExt;
+/// use unai::sse::SSEResponseExt;
+/// use futures::StreamExt;
 ///
 /// let response = client.get("https://api.example.com/stream").send().await?;
 ///
 /// // Get raw SSE data lines
-/// let mut stream = response.sse_lines();
+/// let mut stream = response.sse();
 /// while let Some(result) = stream.next().await {
 ///     let line = result?;
 ///     println!("SSE data: {}", line);
-/// }
-///
-/// // Or automatically deserialize as JSON
-/// let mut stream = response.sse_events::<MyEventType>();
-/// while let Some(result) = stream.next().await {
-///     let event = result?;
-///     println!("Event: {:?}", event);
 /// }
 /// ```
 pub trait SSEResponseExt {
@@ -56,47 +50,38 @@ impl SSEResponseExt for reqwest::Response {
             (Box::pin(byte_stream), String::new(), false),
             |(mut byte_stream, mut buffer, mut stream_ended)| async move {
                 loop {
-                    // If stream hasn't ended, try to read more data
                     if !stream_ended {
                         match byte_stream.next().await {
                             Some(Ok(chunk)) => {
-                                // Append chunk to buffer
                                 if let Ok(s) = std::str::from_utf8(&chunk) {
                                     buffer.push_str(s);
                                 }
                             }
                             Some(Err(e)) => {
-                                // HTTP error
                                 return Some((
                                     Err(ClientError::from(e)),
                                     (byte_stream, buffer, stream_ended),
                                 ));
                             }
                             None => {
-                                // Byte stream ended - process any remaining complete lines in the buffer
                                 stream_ended = true;
                             }
                         }
                     }
 
-                    // Process complete lines from buffer
                     while let Some(pos) = buffer.find('\n') {
                         let line = buffer[..pos].trim().to_string();
                         buffer.drain(..=pos);
 
-                        // Skip empty lines
                         if line.is_empty() {
                             continue;
                         }
 
-                        // Parse SSE format: "data: {...}"
                         if let Some(data) = parse_sse_line(&line) {
-                            // Check for stream end marker
                             if is_done_marker(data) {
                                 return None;
                             }
 
-                            // Return raw data line immediately
                             return Some((
                                 Ok(data.to_string()),
                                 (byte_stream, buffer, stream_ended),
@@ -104,7 +89,6 @@ impl SSEResponseExt for reqwest::Response {
                         }
                     }
 
-                    // If stream ended and no complete lines, try to process incomplete final line
                     if stream_ended {
                         if !buffer.is_empty() {
                             let line = buffer.trim().to_string();
@@ -123,8 +107,6 @@ impl SSEResponseExt for reqwest::Response {
 
                         return None;
                     }
-
-                    // No complete lines yet, continue reading
                 }
             },
         )

@@ -1,6 +1,6 @@
 //! Fireworks API client implementation.
 
-use crate::api::openai::{OpenAiCompatibleClient, OpenAiCompatibleModel};
+use crate::api::openai::{OpenAIClient, OpenAICompatibleModel};
 use crate::options::{ModelOptions, TransportOptions};
 use crate::providers::Provider;
 use serde::{Deserialize, Serialize};
@@ -8,20 +8,19 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct FireworksModel;
 
-impl OpenAiCompatibleModel for FireworksModel {}
+impl OpenAICompatibleModel for FireworksModel {}
 
-pub type FireworksClient = OpenAiCompatibleClient<FireworksModel>;
+pub type FireworksClient = OpenAIClient<FireworksModel>;
 
 pub struct Fireworks;
 
 impl Provider for Fireworks {
     type Client = FireworksClient;
 
-    fn create(api_key: String) -> Self::Client {
-        FireworksClient::new(
+    fn create(api_key: String, model: String) -> Self::Client {
+        Self::create_with_options(
             api_key,
-            "https://api.fireworks.ai/inference".to_string(),
-            ModelOptions::default(),
+            ModelOptions::new(model),
             TransportOptions::default(),
         )
     }

@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_with::skip_serializing_none;
 use std::collections::HashMap;
-use rmcp::model::CallToolResult;
 
 /// Role of the message sender.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -16,9 +15,13 @@ pub enum Role {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MediaType {
+    /// Image content (e.g., PNG, JPEG)
     Image,
+    /// Document content (e.g., PDF, TXT)
     Document,
+    /// Plain text content
     Text,
+    /// Binary or other content
     Binary,
 }
 
@@ -26,11 +29,13 @@ pub enum MediaType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum Part {
+    /// Text content
     Text {
         content: String,
         #[serde(default)]
         finished: bool,
     },
+    /// Reasoning/Thought content (e.g. from reasoning models)
     Reasoning {
         content: String,
         summary: Option<String>,
@@ -38,6 +43,7 @@ pub enum Part {
         #[serde(default)]
         finished: bool,
     },
+    /// Tool/Function call request
     FunctionCall {
         id: Option<String>,
         name: String,
@@ -46,6 +52,7 @@ pub enum Part {
         #[serde(default)]
         finished: bool,
     },
+    /// Tool/Function call response
     FunctionResponse {
         id: Option<String>,
         name: String,
@@ -135,10 +142,10 @@ impl Message {
 /// Provider-agnostic request structure.
 /// Contains only model behavior parameters, not API configuration.
 #[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeneralRequest {
-    /// Model identifier (e.g., "gpt-4o", "claude-3-opus")
-    pub model: Option<String>,
+    /// Model identifier (e.g., "gpt-5", "claude-4.5-opus")
+    pub model: String,
 
     /// Conversation history
     pub history: Vec<Message>,
@@ -221,4 +228,36 @@ pub struct Response {
     pub finish: FinishReason,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
 
+    #[test]
+    fn test_anchor_media() {
+        let part = Part::Media {
+            media_type: MediaType::Document,
+            data: "base64data".to_string(),
+            mime_type: "application/pdf".to_string(),
+            uri: Some("file:///path/to/doc.pdf".to_string()),
+            finished: true,
+        };
+
+        assert_eq!(
+            part.anchor_media(),
+            "File (application/pdf) at file:///path/to/doc.pdf:"
+        );
+    }
+
+    #[test]
+    fn test_anchor_media_no_uri() {
+        let part = Part::Media {
+            media_type: MediaType::Image,
+            data: "base64data".to_string(),
+            mime_type: "image/png".to_string(),
+            uri: None,
+            finished: true,
+        };
+
+        assert_eq!(part.anchor_media(), "File (image/png) at unknown:");
+    }
+}

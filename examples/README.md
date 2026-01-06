@@ -1,91 +1,48 @@
 # unai Examples
 
-This directory contains simple examples for each supported provider.
+This directory contains tutorial-like examples demonstrating the core features of the `unai` library.
 
 ## Running Examples
 
-To run an example, you need to set the corresponding API key environment variable.
+You can run any example using `cargo run --example <name>`.
 
-### OpenAI
-```bash
-export OPENAI_API_KEY=sk-...
-cargo run --example openai
-```
+Most examples require an API key to be set in your environment variables (e.g., `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`).
 
-### Anthropic
-```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-cargo run --example anthropic
-```
+## Available Examples
 
-### Google Gemini
-```bash
-export GEMINI_API_KEY=...
-cargo run --example gemini
-```
+### 1. Basic Client (`01_basic_client.rs`)
+Demonstrates the fundamental usage of the `Client` trait.
+- Creating a Provider (OpenAI, Anthropic, Gemini, etc.)
+- Creating a Client
+- Sending a simple text message
+- Handling the response
+- Run: `cargo run --example 01_basic_client`
 
-### Groq
-```bash
-export GROQ_API_KEY=gsk_...
-cargo run --example groq
-```
+### 2. Streaming (`02_streaming.rs`)
+Shows how to consume streaming responses using Server-Sent Events (SSE).
+- Using `send_stream`
+- Iterating over `StreamChunk`s
+- Real-time output
+- Run: `cargo run --example 02_streaming`
 
-### Mistral
-```bash
-export MISTRAL_API_KEY=...
-cargo run --example mistral
-```
+### 3. Agent & Tools (`03_agent_tools.rs`)
+Demonstrates the high-level `Agent` abstraction and the `#[tool]` macro.
+- Defining a tool function with `#[tool]`
+- Creating an `Agent`
+- Registering tools
+- Automatic tool execution loop
+- Run: `cargo run --example 03_agent_tools`
 
-### DeepSeek
-```bash
-export DEEPSEEK_API_KEY=...
-cargo run --example deepseek
-```
+### 4. Multimodal (`04_multimodal.rs`)
+Shows how to send non-text content like images.
+- Constructing `Message` with multiple `Part`s
+- Sending Image URLs (or base64 data)
+- Vision capabilities
+- Run: `cargo run --example 04_multimodal`
 
-### Perplexity
-```bash
-export PERPLEXITY_API_KEY=pplx-...
-cargo run --example perplexity
-```
-
-### OpenRouter
-```bash
-export OPENROUTER_API_KEY=sk-or-...
-cargo run --example openrouter
-```
-
-### Together AI
-```bash
-export TOGETHER_API_KEY=...
-cargo run --example together
-```
-
-### Fireworks AI
-```bash
-export FIREWORKS_API_KEY=...
-cargo run --example fireworks
-```
-
-### Hyperbolic
-```bash
-export HYPERBOLIC_API_KEY=...
-cargo run --example hyperbolic
-```
-
-### Moonshot AI
-```bash
-export MOONSHOT_API_KEY=...
-cargo run --example moonshot
-```
-
-### xAI (Grok)
-```bash
-export XAI_API_KEY=...
-cargo run --example xai
-```
-
-### Ollama
-Ensure Ollama is running locally (default: http://localhost:11434).
-```bash
-cargo run --example ollama
-```
+### 5. MCP Features (`05_mcp_features.rs`)
+Demonstrates integration with the Model Context Protocol (MCP).
+- Connecting to an external MCP server (e.g., GitHub Copilot)
+- Listing available prompts and resources
+- Using MCP tools with an Agent
+- Run: `cargo run --example 05_mcp_features`

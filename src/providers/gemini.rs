@@ -10,10 +10,10 @@ pub struct Gemini;
 impl Provider for Gemini {
     type Client = GeminiClient;
 
-    fn create(api_key: String) -> Self::Client {
+    fn create(api_key: String, model: String) -> Self::Client {
         Self::create_with_options(
             api_key,
-            ModelOptions::default(),
+            ModelOptions::new(model),
             TransportOptions::default(),
         )
     }

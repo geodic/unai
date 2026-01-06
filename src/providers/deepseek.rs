@@ -1,6 +1,6 @@
 //! DeepSeek API client implementation.
 
-use crate::api::openai::{OpenAiCompatibleClient, OpenAiCompatibleModel};
+use crate::api::openai::{OpenAIClient, OpenAICompatibleModel};
 use crate::options::{ModelOptions, TransportOptions};
 use crate::providers::Provider;
 use serde::{Deserialize, Serialize};
@@ -8,20 +8,19 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DeepSeekModel;
 
-impl OpenAiCompatibleModel for DeepSeekModel {}
+impl OpenAICompatibleModel for DeepSeekModel {}
 
-pub type DeepSeekClient = OpenAiCompatibleClient<DeepSeekModel>;
+pub type DeepSeekClient = OpenAIClient<DeepSeekModel>;
 
 pub struct DeepSeek;
 
 impl Provider for DeepSeek {
     type Client = DeepSeekClient;
 
-    fn create(api_key: String) -> Self::Client {
-        DeepSeekClient::new(
+    fn create(api_key: String, model: String) -> Self::Client {
+        Self::create_with_options(
             api_key,
-            "https://api.deepseek.com".to_string(),
-            ModelOptions::default(),
+            ModelOptions::new(model),
             TransportOptions::default(),
         )
     }

@@ -1,12 +1,14 @@
-use crate::model::{Part, Message, Role, MediaType};
+use crate::model::{MediaType, Message, Part};
 use async_trait::async_trait;
 use rmcp::model::{
-    AnnotateAble, Annotated, CallToolRequestParam, CallToolResult, GetPromptRequestParam, GetPromptResult, Prompt,
-    RawContent, ReadResourceRequestParam, ReadResourceResult, Resource, Tool, ResourceContents, PromptMessageContent
+    AnnotateAble, Annotated, CallToolRequestParam, GetPromptRequestParam, GetPromptResult, Prompt,
+    PromptMessage, PromptMessageContent, PromptMessageRole, RawContent, ReadResourceRequestParam,
+    ReadResourceResult, Resource, ResourceContents, Tool,
 };
 use rmcp::service::{RoleClient, RunningService};
 use rmcp::ClientHandler;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::ops::Deref;
 use thiserror::Error;
 use uuid::Uuid;
@@ -27,20 +29,26 @@ pub enum MCPError {
     ServerIdMismatch,
 }
 
+/// A wrapper type that associates a value with an optional server ID.
+///
+/// This is used to track which MCP server a particular object (Tool, Prompt, Resource)
+/// belongs to, especially when using a `MultiMCPServer`.
 #[derive(Debug, Clone)]
 pub struct Served<T> {
+    /// The underlying value (Tool, Prompt, Resource, etc.).
     pub value: T,
-    pub server_id: String,
+    /// The ID of the server that provided this value.
+    pub server_id: Option<String>,
 }
 
 impl<T> Served<T> {
-    pub fn new(value: T, server_id: String) -> Self {
+    pub fn new(value: T, server_id: Option<String>) -> Self {
         Self { value, server_id }
     }
 }
 
 pub trait Servable {
-    fn served(self, id: String) -> Served<Self>
+    fn served(self, id: Option<String>) -> Served<Self>
     where
         Self: Sized,
     {
@@ -51,6 +59,8 @@ pub trait Servable {
 impl<T: AnnotateAble> Servable for Annotated<T> {}
 impl Servable for Tool {}
 impl Servable for Prompt {}
+impl Servable for GetPromptResult {}
+impl Servable for ReadResourceResult {}
 
 /// Trait for MCP servers that can be used by the Agent.
 #[async_trait]
@@ -59,7 +69,12 @@ pub trait MCPServer: Send + Sync {
     async fn list_tools(&self) -> Result<Vec<Served<Tool>>, MCPError>;
 
     /// Execute a tool.
-    async fn call_tool(&self, name: String, args: Value) -> Result<Part, MCPError>;
+    async fn call_tool(
+        &self,
+        name: String,
+        args: Value,
+        server_id: Option<String>,
+    ) -> Result<Part, MCPError>;
 
     /// List available prompts.
     async fn list_prompts(&self) -> Result<Vec<Served<Prompt>>, MCPError>;
@@ -69,7 +84,7 @@ pub trait MCPServer: Send + Sync {
         &self,
         prompt: &Served<Prompt>,
         args: Option<serde_json::Map<String, Value>>,
-    ) -> Result<GetPromptResult, MCPError>;
+    ) -> Result<Served<GetPromptResult>, MCPError>;
 
     /// List available resources.
     async fn list_resources(&self) -> Result<Vec<Served<Resource>>, MCPError>;
@@ -78,53 +93,32 @@ pub trait MCPServer: Send + Sync {
     async fn read_resource(
         &self,
         resource: &Served<Resource>,
-    ) -> Result<ReadResourceResult, MCPError>;
-
-    /// Get a prompt and convert it to messages.
-    async fn prompt(&self, name: &str, args: Value) -> Result<Vec<Message>, MCPError>;
-}
-
-pub struct MCPServerImpl<S: ClientHandler> {
-    inner: RunningService<RoleClient, S>,
-    id: String,
-}
-
-impl<S: ClientHandler> MCPServerImpl<S> {
-    pub fn new(inner: RunningService<RoleClient, S>) -> Self {
-        Self {
-            inner,
-            id: Uuid::new_v4().to_string(),
-        }
-    }
+    ) -> Result<Served<ReadResourceResult>, MCPError>;
 }
 
 #[async_trait]
-impl<S> MCPServer for MCPServerImpl<S>
-where
-    S: ClientHandler + Send + Sync + 'static,
-{
+impl<S: ClientHandler + Send + Sync> MCPServer for RunningService<RoleClient, S> {
     async fn list_tools(&self) -> Result<Vec<Served<Tool>>, MCPError> {
         let result = self
-            .inner
             .deref()
             .list_tools(None)
             .await
             .map_err(|e| MCPError::Mcp(e.to_string()))?;
-        Ok(result
-            .tools
-            .into_iter()
-            .map(|t| t.served(self.id.clone()))
-            .collect())
+        Ok(result.tools.into_iter().map(|t| t.served(None)).collect())
     }
 
-    async fn call_tool(&self, name: String, args: Value) -> Result<Part, MCPError> {
+    async fn call_tool(
+        &self,
+        name: String,
+        args: Value,
+        _server_id: Option<String>,
+    ) -> Result<Part, MCPError> {
         let params = CallToolRequestParam {
             name: name.clone().into(),
             arguments: args.as_object().cloned(),
         };
 
         let result = self
-            .inner
             .deref()
             .call_tool(params)
             .await
@@ -154,7 +148,7 @@ where
                     });
                 }
                 RawContent::Resource(resource) => {
-                    parts.push(resource_to_part(resource.resource));
+                    parts.push(Part::from(resource.resource));
                 }
                 _ => {}
             }
@@ -179,40 +173,31 @@ where
 
     async fn list_prompts(&self) -> Result<Vec<Served<Prompt>>, MCPError> {
         let result = self
-            .inner
             .deref()
             .list_prompts(None)
             .await
             .map_err(|e| MCPError::Mcp(e.to_string()))?;
-        Ok(result
-            .prompts
-            .into_iter()
-            .map(|p| p.served(self.id.clone()))
-            .collect())
+        Ok(result.prompts.into_iter().map(|p| p.served(None)).collect())
     }
 
     async fn get_prompt(
         &self,
         prompt: &Served<Prompt>,
         args: Option<serde_json::Map<String, Value>>,
-    ) -> Result<GetPromptResult, MCPError> {
-        if prompt.server_id != self.id {
-            return Err(MCPError::ServerIdMismatch);
-        }
+    ) -> Result<Served<GetPromptResult>, MCPError> {
         let params = GetPromptRequestParam {
-            name: prompt.value.name.clone().into(),
+            name: prompt.value.name.clone(),
             arguments: args,
         };
-        self.inner
-            .deref()
+        self.deref()
             .get_prompt(params)
             .await
+            .map(|r| r.served(None))
             .map_err(|e| MCPError::Mcp(e.to_string()))
     }
 
     async fn list_resources(&self) -> Result<Vec<Served<Resource>>, MCPError> {
         let result = self
-            .inner
             .deref()
             .list_resources(None)
             .await
@@ -220,90 +205,61 @@ where
         Ok(result
             .resources
             .into_iter()
-            .map(|r| r.served(self.id.clone()))
+            .map(|r| r.served(None))
             .collect())
     }
 
     async fn read_resource(
         &self,
         resource: &Served<Resource>,
-    ) -> Result<ReadResourceResult, MCPError> {
-        if resource.server_id != self.id {
-            return Err(MCPError::ServerIdMismatch);
-        }
+    ) -> Result<Served<ReadResourceResult>, MCPError> {
         let params = ReadResourceRequestParam {
-            uri: resource.value.uri.clone().into(),
+            uri: resource.value.uri.clone(),
         };
-        self.inner
-            .deref()
+        self.deref()
             .read_resource(params)
             .await
+            .map(|r| r.served(None))
             .map_err(|e| MCPError::Mcp(e.to_string()))
-    }
-
-    async fn prompt(&self, name: &str, args: Value) -> Result<Vec<Message>, MCPError> {
-        let prompts = self.list_prompts().await?;
-        let prompt = prompts
-            .iter()
-            .find(|p| p.value.name == name)
-            .ok_or_else(|| MCPError::PromptNotFound(name.to_string()))?;
-
-        let result = self.get_prompt(prompt, args.as_object().cloned()).await?;
-        
-        let mut messages = Vec::new();
-        for msg in result.messages {
-            let role = match msg.role {
-                rmcp::model::PromptMessageRole::User => Role::User,
-                rmcp::model::PromptMessageRole::Assistant => Role::Assistant,
-            };
-
-            let part = match msg.content {
-                PromptMessageContent::Text { text } => Part::Text { content: text, finished: true },
-                PromptMessageContent::Image { image } => Part::Media { 
-                    media_type: MediaType::Image,
-                    data: image.data.clone(), 
-                    mime_type: image.mime_type.clone(), 
-                    uri: None,
-                    finished: true 
-                },
-                PromptMessageContent::Resource { resource } => {
-                    resource_to_part(resource.resource.clone())
-                }
-                _ => continue,
-            };
-
-            messages.push(match role {
-                Role::User => Message::User(vec![part]),
-                Role::Assistant => Message::Assistant(vec![part]),
-            });
-        }
-
-        Ok(messages)
     }
 }
 
 /// A helper to combine multiple MCP servers into one.
 pub struct MultiMCPServer {
-    servers: Vec<Box<dyn MCPServer>>,
+    servers: HashMap<String, Box<dyn MCPServer>>,
+}
+
+impl Default for MultiMCPServer {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl MultiMCPServer {
     pub fn new() -> Self {
         Self {
-            servers: Vec::new(),
+            servers: HashMap::new(),
         }
     }
 
-    pub fn add_server<S: ClientHandler + Send + Sync + 'static>(
-        mut self,
-        server: RunningService<RoleClient, S>,
-    ) -> Self {
-        self.servers.push(Box::new(MCPServerImpl::new(server)));
+    pub fn from_servers(servers: Vec<Box<dyn MCPServer>>) -> Self {
+        let mut map = HashMap::new();
+        for server in servers {
+            let id = Uuid::new_v4().to_string();
+            map.insert(id, server);
+        }
+        Self { servers: map }
+    }
+
+    pub fn add_server<S: MCPServer + 'static>(mut self, server: S) -> Self {
+        let id = Uuid::new_v4().to_string();
+        self.servers.insert(id, Box::new(server));
         self
     }
 
     pub fn add_boxed_server(mut self, server: Box<dyn MCPServer>) -> Self {
-        self.servers.push(server);
+        let id = Uuid::new_v4().to_string();
+        self.servers.insert(id, server);
         self
     }
 }
@@ -312,18 +268,33 @@ impl MultiMCPServer {
 impl MCPServer for MultiMCPServer {
     async fn list_tools(&self) -> Result<Vec<Served<Tool>>, MCPError> {
         let mut all_tools = Vec::new();
-        for server in &self.servers {
-            let tools = server.list_tools().await?;
-            all_tools.extend(tools);
+        for (id, server) in &self.servers {
+            let tools: Vec<Served<Tool>> = server.list_tools().await?;
+            all_tools.extend(tools.into_iter().map(|mut t| {
+                t.server_id = Some(id.clone());
+                t
+            }));
         }
         Ok(all_tools)
     }
 
-    async fn call_tool(&self, name: String, args: Value) -> Result<Part, MCPError> {
-        for server in &self.servers {
-            let tools = server.list_tools().await?;
+    async fn call_tool(
+        &self,
+        name: String,
+        args: Value,
+        server_id: Option<String>,
+    ) -> Result<Part, MCPError> {
+        if let Some(id) = server_id {
+            if let Some(server) = self.servers.get(&id) {
+                return server.call_tool(name, args, None).await;
+            }
+            return Err(MCPError::ServerNotFound(id));
+        }
+
+        for server in self.servers.values() {
+            let tools: Vec<Served<Tool>> = server.list_tools().await?;
             if tools.iter().any(|t| t.value.name == name) {
-                return server.call_tool(name, args).await;
+                return server.call_tool(name, args, None).await;
             }
         }
         Err(MCPError::ToolNotFound(name))
@@ -331,9 +302,12 @@ impl MCPServer for MultiMCPServer {
 
     async fn list_prompts(&self) -> Result<Vec<Served<Prompt>>, MCPError> {
         let mut all_prompts = Vec::new();
-        for server in &self.servers {
-            let prompts = server.list_prompts().await?;
-            all_prompts.extend(prompts);
+        for (id, server) in &self.servers {
+            let prompts: Vec<Served<Prompt>> = server.list_prompts().await?;
+            all_prompts.extend(prompts.into_iter().map(|mut p| {
+                p.server_id = Some(id.clone());
+                p
+            }));
         }
         Ok(all_prompts)
     }
@@ -342,22 +316,24 @@ impl MCPServer for MultiMCPServer {
         &self,
         prompt: &Served<Prompt>,
         args: Option<serde_json::Map<String, Value>>,
-    ) -> Result<GetPromptResult, MCPError> {
-        for server in &self.servers {
-            match server.get_prompt(prompt, args.clone()).await {
-                Ok(res) => return Ok(res),
-                Err(MCPError::ServerIdMismatch) => continue,
-                Err(e) => return Err(e),
+    ) -> Result<Served<GetPromptResult>, MCPError> {
+        if let Some(id) = &prompt.server_id {
+            if let Some(server) = self.servers.get(id) {
+                return server.get_prompt(prompt, args).await;
             }
+            return Err(MCPError::ServerNotFound(id.clone()));
         }
-        Err(MCPError::ServerNotFound(prompt.server_id.clone()))
+        Err(MCPError::ServerIdMismatch)
     }
 
     async fn list_resources(&self) -> Result<Vec<Served<Resource>>, MCPError> {
         let mut all_resources = Vec::new();
-        for server in &self.servers {
-            let resources = server.list_resources().await?;
-            all_resources.extend(resources);
+        for (id, server) in &self.servers {
+            let resources: Vec<Served<Resource>> = server.list_resources().await?;
+            all_resources.extend(resources.into_iter().map(|mut r| {
+                r.server_id = Some(id.clone());
+                r
+            }));
         }
         Ok(all_resources)
     }
@@ -365,42 +341,39 @@ impl MCPServer for MultiMCPServer {
     async fn read_resource(
         &self,
         resource: &Served<Resource>,
-    ) -> Result<ReadResourceResult, MCPError> {
-        for server in &self.servers {
-            match server.read_resource(resource).await {
-                Ok(res) => return Ok(res),
-                Err(MCPError::ServerIdMismatch) => continue,
-                Err(e) => return Err(e),
+    ) -> Result<Served<ReadResourceResult>, MCPError> {
+        if let Some(id) = &resource.server_id {
+            if let Some(server) = self.servers.get(id) {
+                return server.read_resource(resource).await;
             }
+            return Err(MCPError::ServerNotFound(id.clone()));
         }
-        Err(MCPError::ServerNotFound(resource.server_id.clone()))
-    }
-
-    async fn prompt(&self, name: &str, args: Value) -> Result<Vec<Message>, MCPError> {
-        for server in &self.servers {
-            let prompts = server.list_prompts().await?;
-            if prompts.iter().any(|p| p.value.name == name) {
-                return server.prompt(name, args).await;
-            }
-        }
-        Err(MCPError::PromptNotFound(name.to_string()))
+        Err(MCPError::ServerIdMismatch)
     }
 }
 
 #[async_trait]
 pub trait AttachResources {
-    async fn resources(self, server: &dyn MCPServer, resources: Vec<Served<Resource>>) -> Result<Self, MCPError>
-    where Self: Sized;
+    async fn resources(
+        self,
+        server: &dyn MCPServer,
+        resources: Vec<Served<Resource>>,
+    ) -> Result<Self, MCPError>
+    where
+        Self: Sized;
 }
 
 #[async_trait]
 impl AttachResources for Message {
-    async fn resources(mut self, server: &dyn MCPServer, resources: Vec<Served<Resource>>) -> Result<Self, MCPError> {
+    async fn resources(
+        mut self,
+        server: &dyn MCPServer,
+        resources: Vec<Served<Resource>>,
+    ) -> Result<Self, MCPError> {
         for resource in resources {
             let result = server.read_resource(&resource).await?;
-            for content in result.contents {
-                self.parts_mut().push(resource_to_part(content));
-            }
+            let parts: Vec<Part> = result.into();
+            self.parts_mut().extend(parts);
         }
         Ok(self)
     }
@@ -408,7 +381,11 @@ impl AttachResources for Message {
 
 #[async_trait]
 impl AttachResources for Vec<Message> {
-    async fn resources(mut self, server: &dyn MCPServer, resources: Vec<Served<Resource>>) -> Result<Self, MCPError> {
+    async fn resources(
+        mut self,
+        server: &dyn MCPServer,
+        resources: Vec<Served<Resource>>,
+    ) -> Result<Self, MCPError> {
         if !self.is_empty() {
             let first = self.remove(0);
             let first = first.resources(server, resources).await?;
@@ -418,34 +395,88 @@ impl AttachResources for Vec<Message> {
     }
 }
 
-fn resource_to_part(resource: ResourceContents) -> Part {
-    match resource {
-        ResourceContents::TextResourceContents { text, mime_type, uri, .. } => {
-             Part::Media {
+impl From<ResourceContents> for Part {
+    fn from(resource: ResourceContents) -> Self {
+        match resource {
+            ResourceContents::TextResourceContents {
+                text,
+                mime_type,
+                uri,
+                ..
+            } => Part::Media {
                 media_type: MediaType::Text,
                 data: text,
                 mime_type: mime_type.unwrap_or_else(|| "text/plain".to_string()),
                 uri: Some(uri),
                 finished: true,
-            }
-        }
-        ResourceContents::BlobResourceContents { blob, mime_type, uri, .. } => {
-            let mime = mime_type.unwrap_or_else(|| "application/octet-stream".to_string());
-            let media_type = if mime.starts_with("image/") {
-                MediaType::Image
-            } else if mime == "application/pdf" {
-                MediaType::Document
-            } else {
-                MediaType::Binary
-            };
+            },
+            ResourceContents::BlobResourceContents {
+                blob,
+                mime_type,
+                uri,
+                ..
+            } => {
+                let mime = mime_type.unwrap_or_else(|| "application/octet-stream".to_string());
+                let media_type = if mime.starts_with("image/") {
+                    MediaType::Image
+                } else if mime == "application/pdf" {
+                    MediaType::Document
+                } else {
+                    MediaType::Binary
+                };
 
-            Part::Media {
-                media_type,
-                data: blob,
-                mime_type: mime,
-                uri: Some(uri),
-                finished: true,
+                Part::Media {
+                    media_type,
+                    data: blob,
+                    mime_type: mime,
+                    uri: Some(uri),
+                    finished: true,
+                }
             }
         }
+    }
+}
+
+impl From<PromptMessage> for Message {
+    fn from(pm: PromptMessage) -> Self {
+        let part = match pm.content {
+            PromptMessageContent::Text { text } => Part::Text {
+                content: text,
+                finished: true,
+            },
+            PromptMessageContent::Image { image, .. } => Part::Media {
+                media_type: MediaType::Image,
+                data: image.data.clone(),
+                mime_type: image.mime_type.clone(),
+                uri: None,
+                finished: true,
+            },
+            PromptMessageContent::Resource { resource } => Part::from(resource.resource.clone()),
+            PromptMessageContent::ResourceLink { .. } => {
+                unimplemented!("ResourceLink not supported")
+            }
+        };
+
+        match pm.role {
+            PromptMessageRole::User => Message::User(vec![part]),
+            PromptMessageRole::Assistant => Message::Assistant(vec![part]),
+        }
+    }
+}
+
+impl From<Served<GetPromptResult>> for Vec<Message> {
+    fn from(served: Served<GetPromptResult>) -> Self {
+        served
+            .value
+            .messages
+            .into_iter()
+            .map(Message::from)
+            .collect()
+    }
+}
+
+impl From<Served<ReadResourceResult>> for Vec<Part> {
+    fn from(served: Served<ReadResourceResult>) -> Self {
+        served.value.contents.into_iter().map(Part::from).collect()
     }
 }

@@ -20,33 +20,36 @@
 //!
 //! ### Core Types
 //!
-//! - **`Provider`**: Factory trait for creating clients.
-//! - **`Client`**: Trait for making requests to LLM providers.
-//! - **`ModelOptions<T>`**: Model behavior parameters (temperature, max_tokens, etc.)
-//! - **`TransportOptions`**: Transport configuration (timeout, proxy, etc.)
-//! - **Message**: Individual conversation messages with role and content
+//! - [`Provider`](crate::providers::Provider): Factory trait for creating clients.
+//! - [`Client`]: Trait for making requests to LLM providers.
+//! - [`Agent`]: High-level orchestration for multi-turn conversations and tool use.
+//! - [`ModelOptions`](crate::options::ModelOptions): Model behavior parameters (temperature, max_tokens, etc.)
+//! - [`TransportOptions`](crate::options::TransportOptions): Transport configuration (timeout, proxy, etc.)
+//! - [`Message`]: Individual conversation messages with role and content
 //!
 //! ## Example
 //! ```no_run
 //! use unai::client::Client;
-//! use unai::model::{Message, Role};
-//! use unai::providers::{OpenAiProvider, Provider};
+//! use unai::model::{Message, Part};
+//! use unai::providers::{OpenAI, Provider};
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     // Create client using the factory
-//!     let client = OpenAiProvider::create("your-api-key".to_string());
+//!     let client = OpenAI::create("your-api-key".to_string(), "gpt-5".to_string());
 //!     
-//!     // Use convenient instance method with just messages
+//!     // Create a message with text content
 //!     let messages = vec![
-//!         Message::Text {
-//!             role: Role::User,
-//!             content: "Hello!".to_string(),
-//!         }
+//!         Message::User(vec![
+//!             Part::Text {
+//!                 content: "Hello!".to_string(),
+//!                 finished: true,
+//!             }
+//!         ])
 //!     ];
 //!     
-//!     // Use the chat helper which creates a Context internally
-//!     let response = client.chat(messages).await?;
+//!     // Send request
+//!     let response = client.request(messages, vec![]).await?;
 //!     println!("{:?}", response);
 //!     Ok(())
 //! }
@@ -66,13 +69,9 @@ pub mod tools;
 
 pub use agent::Agent;
 pub use client::{Client, ClientError, StreamingClient};
-pub use mcp::{MCPServer, AttachResources};
+pub use mcp::{AttachResources, MCPServer};
 pub use model::{GeneralRequest, Message, Response};
-// pub use stream::StreamChunk;
 pub use tools::{Tool, ToolError, ToolService};
 
 // Re-export rmcp for convenience
 pub use rmcp;
-
-// Re-export the proc macro attribute
-pub use unai_macros::tool;

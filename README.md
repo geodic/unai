@@ -1,32 +1,52 @@
-# unai - Universal AI Client Library
+# unai
 
-A small, pragmatic Rust library providing a provider-agnostic LLM client architecture with a fully generic options system.
+[![Crates.io](https://img.shields.io/crates/v/unai.svg)](https://crates.io/crates/unai)
+[![Documentation](https://docs.rs/unai/badge.svg)](https://docs.rs/unai)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-## Features
+> **⚠️ Warning: Heavy Development**  
+> This library is currently under active and heavy development. APIs are subject to change, and future updates may introduce breaking changes. Use with caution in production environments.
 
-- **Async-first**: Built on `tokio` and `reqwest`.
-- **Provider-agnostic**: Common trait-based design for all providers.
-- **Generic Options**: Flexible configuration for models and transport.
-- **Streaming Support**: Unified streaming interface via Server-Sent Events (SSE).
-- **Type-safe**: Strong typing for requests, responses, and tools.
-- **Extensible**: Easy to add new providers.
+**unai** (Universal AI) is a pragmatic, provider-agnostic Rust library designed to unify interactions with various Large Language Model (LLM) providers. It abstracts away the differences between APIs (OpenAI, Anthropic, Gemini, etc.) into a single, consistent interface, while providing powerful features like automatic tool execution (Agents) and Model Context Protocol (MCP) integration.
+
+## Key Features
+
+### Universal Client Interface
+Write your code once and switch providers with a single line of configuration. `unai` normalizes:
+- **Authentication**: Standardized API key handling.
+- **Request/Response Models**: Unified `Message`, `Part`, and `Response` structs.
+- **Streaming**: Consistent Server-Sent Events (SSE) handling across all providers.
+
+### Agentic Workflow
+The `Agent` struct wraps any `Client` to provide an autonomous loop:
+- **Automatic Tool Execution**: The agent handles the "LLM calls tool -> Execute tool -> Send result back" loop automatically.
+- **Iteration Control**: Configurable maximum iterations to prevent infinite loops.
+- **State Management**: Maintains conversation history during the execution loop.
+
+### Model Context Protocol (MCP) Support
+Built-in support for the [Model Context Protocol](https://modelcontextprotocol.io/):
+- **Tool Integration**: Seamlessly use MCP servers to provide tools to your agents.
+- **Resource Access**: Access and read resources directly from MCP servers.
+- **Prompt Support**: List and retrieve prompts from MCP servers for dynamic template usage.
 
 ## Supported Providers
 
-- OpenAI
-- Anthropic (Claude)
-- Google Gemini
-- Groq
-- Mistral AI
+Here is an exhaustive list of all the providers we currently support (more to come):
+
+- OpenAI (e.g., GPT-5, o3)
+- Anthropic (e.g., Claude 4.5 Sonnet, Opus)
+- Google Gemini (e.g., Gemini 3.0 Flash, Pro)
+- Groq (e.g., Grok)
+- Mistral (e.g., Mistral Large)
 - DeepSeek
 - Perplexity
 - OpenRouter
-- Together AI
-- Fireworks AI
+- Together
+- Fireworks
 - Hyperbolic
-- Moonshot AI
-- xAI (Grok)
-- Ollama (Local)
+- Moonshot
+- xAI
+- Ollama (local models)
 
 ## Installation
 
@@ -38,43 +58,45 @@ unai = "0.1.0"
 tokio = { version = "1.0", features = ["full"] }
 ```
 
-## Usage
+## Simple Example
 
 ```rust
-use unai::{Agent, Context};
 use unai::client::Client;
-use unai::model::{Message, Role};
-use unai::options::{HttpTransport, ModelOptions, TransportOptions};
-use unai::providers::{OpenAiClient, OpenAiModel};
+use unai::model::{Message, Part};
+use unai::providers::{OpenAI, Provider};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let api_key = std::env::var("OPENAI_API_KEY")?;
 
-    // Configure model options
-    let model_options = ModelOptions {
-        model: Some("gpt-4o".to_string()),
-        provider: OpenAiModel::default(),
-        ..Default::default()
-    };
-
-    // Configure transport options
-    let transport_options = TransportOptions::new(HttpTransport::new(api_key));
+    // Create client using the factory
+    let client = OpenAI::create(api_key, "gpt-5".to_string());
     
-    // Create agent
-    let agent = Agent::<OpenAiClient>::new(model_options, transport_options);
+    // Create a message
+    let messages = vec![
+        Message::User(vec![
+            Part::Text {
+                content: "Hello!".to_string(),
+                finished: true,
+            }
+        ])
+    ];
 
     // Send request
-    let messages = vec![Message::Text {
-        role: Role::User,
-        content: "Hello!".to_string(),
-    }];
-
-    let response = agent.chat(Context::with_messages(messages)).await?;
-    println!("Response: {:?}", response.data.first().and_then(|m| m.content()));
+    let response = client.request(messages, vec![]).await?;
+    
+    // Print response content
+    if let Some(msg) = response.data.first() {
+        if let Some(content) = msg.content() {
+            println!("Response: {}", content);
+        }
+    }
 
     Ok(())
 }
 ```
+See `examples/` for more detailed example usages.
 
-See `examples/` for more provider-specific examples.
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.

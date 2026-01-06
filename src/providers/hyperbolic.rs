@@ -1,6 +1,6 @@
 //! Hyperbolic API client implementation.
 
-use crate::api::openai::{OpenAiCompatibleClient, OpenAiCompatibleModel};
+use crate::api::openai::{OpenAIClient, OpenAICompatibleModel};
 use crate::options::{ModelOptions, TransportOptions};
 use crate::providers::Provider;
 use serde::{Deserialize, Serialize};
@@ -8,20 +8,19 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct HyperbolicModel;
 
-impl OpenAiCompatibleModel for HyperbolicModel {}
+impl OpenAICompatibleModel for HyperbolicModel {}
 
-pub type HyperbolicClient = OpenAiCompatibleClient<HyperbolicModel>;
+pub type HyperbolicClient = OpenAIClient<HyperbolicModel>;
 
 pub struct Hyperbolic;
 
 impl Provider for Hyperbolic {
     type Client = HyperbolicClient;
 
-    fn create(api_key: String) -> Self::Client {
-        HyperbolicClient::new(
+    fn create(api_key: String, model: String) -> Self::Client {
+        Self::create_with_options(
             api_key,
-            "https://api.hyperbolic.xyz".to_string(),
-            ModelOptions::default(),
+            ModelOptions::new(model),
             TransportOptions::default(),
         )
     }

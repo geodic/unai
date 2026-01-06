@@ -1,6 +1,6 @@
 //! Perplexity API client implementation.
 
-use crate::api::openai::{OpenAiCompatibleClient, OpenAiCompatibleModel};
+use crate::api::openai::{OpenAIClient, OpenAICompatibleModel};
 use crate::options::{ModelOptions, TransportOptions};
 use crate::providers::Provider;
 use serde::{Deserialize, Serialize};
@@ -8,20 +8,19 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PerplexityModel;
 
-impl OpenAiCompatibleModel for PerplexityModel {}
+impl OpenAICompatibleModel for PerplexityModel {}
 
-pub type PerplexityClient = OpenAiCompatibleClient<PerplexityModel>;
+pub type PerplexityClient = OpenAIClient<PerplexityModel>;
 
 pub struct Perplexity;
 
 impl Provider for Perplexity {
     type Client = PerplexityClient;
 
-    fn create(api_key: String) -> Self::Client {
-        PerplexityClient::new(
+    fn create(api_key: String, model: String) -> Self::Client {
+        Self::create_with_options(
             api_key,
-            "https://api.perplexity.ai".to_string(),
-            ModelOptions::default(),
+            ModelOptions::new(model),
             TransportOptions::default(),
         )
     }

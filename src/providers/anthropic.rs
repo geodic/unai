@@ -9,11 +9,10 @@ pub struct Anthropic;
 impl Provider for Anthropic {
     type Client = AnthropicClient;
 
-    fn create(api_key: String) -> Self::Client {
-        AnthropicClient::new(
+    fn create(api_key: String, model: String) -> Self::Client {
+        Self::create_with_options(
             api_key,
-            "https://api.anthropic.com/v1".to_string(),
-            ModelOptions::default(),
+            ModelOptions::new(model),
             TransportOptions::default(),
         )
     }
