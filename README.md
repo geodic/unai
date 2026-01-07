@@ -4,10 +4,12 @@
 [![Documentation](https://docs.rs/unia/badge.svg)](https://docs.rs/unia)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-> **⚠️ Warning: Heavy Development**  
+> **⚠️ Warning: Heavy Development**
 > This library is currently under active and heavy development. APIs are subject to change, and future updates may introduce breaking changes. Use with caution in production environments.
 
 **unia** is a pragmatic, provider-agnostic Rust library designed to unify interactions with various Large Language Model (LLM) providers. It abstracts away the differences between APIs (OpenAI, Anthropic, Gemini, etc.) into a single, consistent interface, while providing powerful features like automatic tool execution (Agents) and Model Context Protocol (MCP) integration.
+
+If you find `unia` helpful, please consider leaving a ⭐, it helps us a lot!
 
 ## Key Features
 
